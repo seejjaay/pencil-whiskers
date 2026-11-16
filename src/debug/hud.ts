@@ -79,7 +79,7 @@ export function snapshot(now: number, render: RenderStats, t: TrackerStats, vide
 
 const fmt = (n: number) => (Number.isFinite(n) ? n.toFixed(1) : '-');
 
-export function renderHud(el: HTMLElement, s: Snapshot, pointer: string): void {
+export function renderHud(el: HTMLElement, s: Snapshot, extra: string[]): void {
   el.textContent = [
     `render   ${fmt(s.renderFps)} fps   frame p50 ${fmt(s.frameMsP50)} / p95 ${fmt(s.frameMsP95)} ms   long ${s.longFrames}`,
     `camera   ${fmt(s.cameraFps)} fps   ${s.video}`,
@@ -87,6 +87,7 @@ export function renderHud(el: HTMLElement, s: Snapshot, pointer: string): void {
     `infer    p50 ${fmt(s.inferMsP50)} / p95 ${fmt(s.inferMsP95)} ms   grab p50 ${fmt(s.grabMsP50)} ms`,
     `latency  grab→result p50 ${fmt(s.grabToResultP50)} / p95 ${fmt(s.grabToResultP95)} ms`,
     `         capture→result p50 ${fmt(s.captureToResultP50)} / p95 ${fmt(s.captureToResultP95)} ms`,
-    `pointer  ${pointer}   [D] toggle`,
+    ...extra,
+    `[D] hud  [M] camera/mouse  [T] tuning`,
   ].join('\n');
 }

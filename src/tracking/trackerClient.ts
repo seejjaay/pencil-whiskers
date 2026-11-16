@@ -15,6 +15,8 @@ export interface TrackResult {
   hand: HandFrame | null;
   /** performance.now() when the result arrived on the main thread. */
   receivedAt: number;
+  /** When the frame was captured (rVFC captureTime, else grab time): the right clock for filtering. */
+  frameTime: number;
   frameId: number;
 }
 
@@ -63,6 +65,8 @@ export class TrackerClient {
   /** Latest result. The render loop reads this; nothing ever awaits it. */
   latest: TrackResult | null = null;
   lastError: string | null = null;
+  /** Called synchronously for every result, in order. Keep handlers cheap. */
+  readonly listeners = new Set<(r: TrackResult) => void>();
 
   private worker: Worker | null = null;
   private ready = false;
@@ -183,7 +187,9 @@ export class TrackerClient {
     if (msg.type !== 'result') return;
     const now = performance.now();
     const p = this.inFlight;
+    let frameTime = now;
     if (p && p.frameId === msg.frameId) {
+      frameTime = p.captureTime ?? p.grabStart;
       this.stats.grabToResultMs.add(now - p.grabStart);
       if (p.captureTime !== undefined) this.stats.captureToResultMs.add(now - p.captureTime);
       this.inFlight = null;
@@ -191,6 +197,7 @@ export class TrackerClient {
     this.stats.inferMs.add(msg.inferMs);
     this.trackRate.tick(now);
     if (msg.hand) this.handRate.tick(now);
-    this.latest = { hand: msg.hand, receivedAt: now, frameId: msg.frameId };
+    this.latest = { hand: msg.hand, receivedAt: now, frameTime, frameId: msg.frameId };
+    for (const fn of this.listeners) fn(this.latest);
   }
 }

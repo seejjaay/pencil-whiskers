@@ -1,35 +1,48 @@
 import { CameraError, openCamera, openFakeCamera } from './camera/camera';
 import { RenderStats, renderHud, snapshot } from './debug/hud';
-import { CameraPointerSource, type PointerSource } from './input/pointerSource';
+import { mountTuningPanel } from './debug/tuning';
+import { CameraPointerSource, MousePointerSource, type CursorState, type PointerSource } from './input/pointerSource';
+import { StrokeRecorder, pathLength, type Stroke } from './input/strokes';
+import { loadTuning } from './settings';
 import type { Delegate } from './tracking/protocol';
 import { TrackerClient, emptyTrackerStats } from './tracking/trackerClient';
 import { makeCoverMap, type CoverMap } from './view/coverMap';
 import { drawYarnBall } from './view/render';
+import { YARN_DUD, YARN_PINK, drawYarn } from './view/yarnTrail';
 
-// ---- tunables via URL: ?bench  ?delegate=cpu  ?trackw=640  ?hud=0  ?fake (synthetic camera)
+// ---- tunables via URL: ?bench  ?delegate=cpu  ?trackw=640  ?hud=0  ?fake (synthetic camera)  ?mouse (skip camera)
 const params = new URLSearchParams(location.search);
 const BENCH = params.has('bench');
 const DELEGATE: Delegate = params.get('delegate')?.toLowerCase() === 'cpu' ? 'CPU' : 'GPU';
 const TRACK_W = Number(params.get('trackw') ?? 640) || 0;
 const FAKE_CAMERA = params.has('fake');
+const MOUSE_ONLY = params.has('mouse');
 
 const video = document.querySelector<HTMLVideoElement>('#video')!;
 const canvas = document.querySelector<HTMLCanvasElement>('#stage')!;
 const hud = document.querySelector<HTMLPreElement>('#hud')!;
 const statusEl = document.querySelector<HTMLDivElement>('#status')!;
+const statusBtn = statusEl.querySelector<HTMLButtonElement>('button')!;
+const modeBtn = document.querySelector<HTMLButtonElement>('#mode')!;
+const tuningEl = document.querySelector<HTMLDivElement>('#tuning')!;
 const ctx = canvas.getContext('2d', { alpha: true })!;
 
 hud.hidden = params.get('hud') === '0';
+const tuning = loadTuning();
+const tuningPanel = mountTuningPanel(tuningEl, tuning);
 
+// ---- status card: non-blocking while loading, with a dismiss button for errors
 function showStatus(title: string, body: string, isError = false): void {
   statusEl.hidden = false;
   statusEl.classList.toggle('error', isError);
   statusEl.querySelector('h1')!.textContent = title;
   statusEl.querySelector('p')!.textContent = body;
+  statusBtn.hidden = !isError;
 }
 const hideStatus = () => (statusEl.hidden = true);
+statusBtn.addEventListener('click', hideStatus);
 
-const MOUSE_NOTE = ' Mouse mode is coming in the next milestone.';
+const MOUSE_NOTE = ' You can draw with the mouse meanwhile: hold the button and drag.';
 function cameraErrorText(err: CameraError): [string, string] {
   switch (err.kind) {
     case 'denied':
@@ -63,20 +76,112 @@ window.addEventListener('resize', resize);
 video.addEventListener('resize', resize); // fires when the stream's dimensions change
 resize();
 
-// ---- render loop: runs from the start, never waits on tracking
+// ---- input: mouse is always available; camera joins once tracking is ready
+const mouse = new MousePointerSource(canvas);
+let camera: CameraPointerSource | null = null;
+let active: PointerSource = mouse;
+const recorder = new StrokeRecorder(tuning.recorder);
+
+function setMode(kind: 'camera' | 'mouse'): void {
+  if (kind === 'camera' && !camera) return;
+  const next = kind === 'camera' ? camera! : mouse;
+  if (next === active) return;
+  recorder.finish(performance.now()); // abandon a half-drawn stroke
+  recorder.current = null;
+  active.reset();
+  next.reset();
+  active = next;
+  displayCursor = null;
+  document.body.dataset.mode = kind;
+  modeBtn.textContent = kind === 'camera' ? 'Drawing with: hand (M)' : 'Drawing with: mouse (M)';
+}
+modeBtn.addEventListener('click', () => setMode(active.kind === 'camera' ? 'mouse' : 'camera'));
+setMode('mouse');
+document.body.dataset.mode = 'mouse';
+
+// ---- strokes on screen
+interface Shown {
+  stroke: Stroke;
+  kept: boolean;
+  at: number;
+}
+const shown: Shown[] = [];
+const KEEP_MS = 900;
+const DUD_MS = 350;
+let strokesKept = 0;
+let strokesDiscarded = 0;
+let lastStrokeInfo = '-';
+
+// Camera samples arrive at ~26 Hz; the screen refreshes at up to 144 Hz. The cursor eases
+// toward the newest filtered sample so it glides instead of stepping. Strokes use the
+// samples themselves, not this display-only easing.
+let displayCursor: CursorState | null = null;
+const EASE_MS = 22;
+
+function updateDisplayCursor(target: CursorState | null, dt: number): void {
+  if (!target) {
+    displayCursor = null;
+    return;
+  }
+  if (active.kind === 'mouse' || !displayCursor || Math.hypot(target.x - displayCursor.x, target.y - displayCursor.y) > 400) {
+    displayCursor = { ...target };
+    return;
+  }
+  const k = 1 - Math.exp(-dt / EASE_MS);
+  displayCursor = {
+    x: displayCursor.x + (target.x - displayCursor.x) * k,
+    y: displayCursor.y + (target.y - displayCursor.y) * k,
+    down: target.down,
+    t: target.t,
+  };
+}
+
+// ---- render loop: never waits on tracking
 const renderStats = new RenderStats();
-let pointer: PointerSource | null = null;
 let tracker: TrackerClient | null = null;
 let lastHud = 0;
 let lastBench = 0;
+let lastFrame = 0;
 
 function frame(now: number): void {
   requestAnimationFrame(frame);
   const t0 = performance.now();
+  const dt = lastFrame ? Math.min(100, now - lastFrame) : 16;
+  lastFrame = now;
 
+  // 1. input
+  const inactive = active === mouse ? camera : mouse;
+  inactive?.drain();
+  for (const s of active.drain()) {
+    const ev = recorder.push(s);
+    if (!ev) continue;
+    shown.push({ stroke: ev.stroke, kept: ev.type === 'stroke', at: now });
+    if (ev.type === 'stroke') {
+      strokesKept++;
+      const st = ev.stroke;
+      lastStrokeInfo = `${st.points.length} pts, ${Math.round(st.endT - st.startT)} ms, ${Math.round(pathLength(st.points))} px`;
+    } else {
+      strokesDiscarded++;
+    }
+  }
+  updateDisplayCursor(active.cursor(), dt);
+
+  // 2. draw
   ctx.clearRect(0, 0, viewW, viewH);
-  const p = pointer?.latest() ?? null;
-  if (p) drawYarnBall(ctx, p.x, p.y, 14, now);
+  for (let i = shown.length - 1; i >= 0; i--) {
+    const s = shown[i];
+    const life = s.kept ? KEEP_MS : DUD_MS;
+    const age = now - s.at;
+    if (age > life) {
+      shown.splice(i, 1);
+      continue;
+    }
+    const f = age / life;
+    drawYarn(ctx, s.stroke.points, s.kept ? YARN_PINK : YARN_DUD, { alpha: 1 - f * f, widthScale: 1 - 0.3 * f });
+  }
+  const cur = recorder.current;
+  if (cur) drawYarn(ctx, cur.points, YARN_PINK, { head: displayCursor?.down ? displayCursor : null });
+  if (displayCursor) drawCursor(ctx, displayCursor, now);
 
   renderStats.frame(now, performance.now() - t0);
 
@@ -84,12 +189,44 @@ function frame(now: number): void {
     lastHud = now;
     tracker?.sampleRates(now);
     const snap = currentSnapshot(now);
-    if (!hud.hidden) renderHud(hud, snap, p ? `${Math.round(p.x)}, ${Math.round(p.y)}` : 'no hand');
+    if (!hud.hidden) renderHud(hud, snap, hudLines());
     if (BENCH && now - lastBench > 5000) {
       lastBench = now;
       console.log('[bench]', JSON.stringify(snap));
     }
   }
+}
+
+function drawCursor(c: CanvasRenderingContext2D, p: CursorState, now: number): void {
+  if (!p.down) {
+    // Pen up: a soft dashed ring says "hovering, not drawing".
+    c.save();
+    c.beginPath();
+    c.arc(p.x, p.y, 22, 0, Math.PI * 2);
+    c.setLineDash([5, 6]);
+    c.lineDashOffset = -now * 0.02;
+    c.lineWidth = 3;
+    c.strokeStyle = 'rgba(91, 59, 74, 0.55)';
+    c.stroke();
+    c.restore();
+  }
+  drawYarnBall(c, p.x, p.y, p.down ? 11 : 14, now);
+}
+
+function hudLines(): string[] {
+  const lines: string[] = [];
+  if (camera && active === camera) {
+    const d = camera.debug;
+    const ratio = Number.isFinite(d.ratio) ? d.ratio.toFixed(2) : '-';
+    lines.push(
+      `pen      ${d.down ? 'DOWN' : 'up  '}   pinch ${ratio}  (down < ${tuning.pen.press.toFixed(2)}, up > ${tuning.pen.release.toFixed(2)})${d.hand ? '' : '  no hand'}`,
+    );
+  } else {
+    lines.push(`pen      ${displayCursor?.down ? 'DOWN' : 'up  '}   mouse${camera ? '' : ' (camera off)'}`);
+  }
+  lines.push(`strokes  ${strokesKept} kept, ${strokesDiscarded} taps ignored   last: ${lastStrokeInfo}`);
+  lines.push(`filter   minCutoff ${tuning.filter.minCutoff}  beta ${tuning.filter.beta}  dCutoff ${tuning.filter.dCutoff}`);
+  return lines;
 }
 
 const EMPTY_TRACKER = emptyTrackerStats();
@@ -111,11 +248,19 @@ if (BENCH) {
 }
 
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'd' || e.key === 'D') hud.hidden = !hud.hidden;
+  if (e.target instanceof HTMLInputElement) return;
+  const k = e.key.toLowerCase();
+  if (k === 'd') hud.hidden = !hud.hidden;
+  else if (k === 'm') setMode(active.kind === 'camera' ? 'mouse' : 'camera');
+  else if (k === 't') tuningPanel.toggle();
 });
 
 // ---- boot
 async function boot(): Promise<void> {
+  if (MOUSE_ONLY) {
+    showStatus('Mouse mode', 'Hold the mouse button and drag to draw.', true);
+    return;
+  }
   showStatus('Pencil Whiskers', 'Asking for the camera… Your video stays on this computer.');
   try {
     await (FAKE_CAMERA ? openFakeCamera(video) : openCamera(video));
@@ -139,10 +284,18 @@ async function boot(): Promise<void> {
     await tracker.start();
   } catch (err) {
     tracker.stop();
+    tracker = null;
     showStatus('Hand tracker didn’t load', `${err instanceof Error ? err.message : String(err)} Check your connection for the first load, then reload.` + MOUSE_NOTE, true);
     return;
   }
-  pointer = new CameraPointerSource(tracker, () => coverMap);
+  camera = new CameraPointerSource(
+    tracker,
+    () => coverMap,
+    () => ({ width: video.videoWidth, height: video.videoHeight }),
+    tuning.filter,
+    tuning.pen,
+  );
+  setMode('camera');
   hideStatus();
   if (BENCH) console.log('[bench] tracker ready', JSON.stringify({ delegate: tracker.stats.delegate, loadMs: Math.round(tracker.stats.loadMs) }));
 }
