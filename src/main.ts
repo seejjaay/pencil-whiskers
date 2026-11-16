@@ -3,7 +3,10 @@ import { RenderStats, renderHud, snapshot } from './debug/hud';
 import { mountTuningPanel } from './debug/tuning';
 import { CameraPointerSource, MousePointerSource, type CursorState, type PointerSource } from './input/pointerSource';
 import { StrokeRecorder, pathLength, type Stroke } from './input/strokes';
+import { Recognizer, type Recognition } from './recognizer/recognizer';
+import { SHAPES } from './recognizer/shapes';
 import { loadTuning } from './settings';
+import { drawRecognitionLabel } from './view/labels';
 import type { Delegate } from './tracking/protocol';
 import { TrackerClient, emptyTrackerStats } from './tracking/trackerClient';
 import { makeCoverMap, type CoverMap } from './view/coverMap';
@@ -81,6 +84,8 @@ const mouse = new MousePointerSource(canvas);
 let camera: CameraPointerSource | null = null;
 let active: PointerSource = mouse;
 const recorder = new StrokeRecorder(tuning.recorder);
+const recognizer = new Recognizer(SHAPES, tuning.recognizer);
+let lastRecognition: Recognition | null = null;
 
 function setMode(kind: 'camera' | 'mouse'): void {
   if (kind === 'camera' && !camera) return;
@@ -104,9 +109,11 @@ interface Shown {
   stroke: Stroke;
   kept: boolean;
   at: number;
+  /** null for discarded taps. */
+  res: Recognition | null;
 }
 const shown: Shown[] = [];
-const KEEP_MS = 900;
+const KEEP_MS = 1100;
 const DUD_MS = 350;
 let strokesKept = 0;
 let strokesDiscarded = 0;
@@ -155,7 +162,12 @@ function frame(now: number): void {
   for (const s of active.drain()) {
     const ev = recorder.push(s);
     if (!ev) continue;
-    shown.push({ stroke: ev.stroke, kept: ev.type === 'stroke', at: now });
+    const res = ev.type === 'stroke' ? recognizer.recognize(ev.stroke.points) : null;
+    shown.push({ stroke: ev.stroke, kept: ev.type === 'stroke', at: now, res });
+    if (res) {
+      lastRecognition = res;
+      if (BENCH) console.log('[shape]', JSON.stringify({ mode: active.kind, accepted: res.accepted, top: res.top, runnerUp: res.runnerUp, ms: res.ms, points: ev.stroke.points.length }));
+    }
     if (ev.type === 'stroke') {
       strokesKept++;
       const st = ev.stroke;
@@ -177,7 +189,9 @@ function frame(now: number): void {
       continue;
     }
     const f = age / life;
-    drawYarn(ctx, s.stroke.points, s.kept ? YARN_PINK : YARN_DUD, { alpha: 1 - f * f, widthScale: 1 - 0.3 * f });
+    const good = s.kept && !!s.res?.accepted;
+    drawYarn(ctx, s.stroke.points, good ? YARN_PINK : YARN_DUD, { alpha: 1 - f * f, widthScale: 1 - 0.3 * f });
+    if (s.res) drawRecognitionLabel(ctx, s.stroke.points, s.res, 1 - f * f * f);
   }
   const cur = recorder.current;
   if (cur) drawYarn(ctx, cur.points, YARN_PINK, { head: displayCursor?.down ? displayCursor : null });
@@ -225,6 +239,15 @@ function hudLines(): string[] {
     lines.push(`pen      ${displayCursor?.down ? 'DOWN' : 'up  '}   mouse${camera ? '' : ' (camera off)'}`);
   }
   lines.push(`strokes  ${strokesKept} kept, ${strokesDiscarded} taps ignored   last: ${lastStrokeInfo}`);
+  const r = lastRecognition;
+  const pct = (n: number) => n.toFixed(2);
+  lines.push(
+    !r || !r.top
+      ? 'shape    -'
+      : r.accepted
+        ? `shape    ${r.top.label} ${pct(r.top.score)}   next: ${r.runnerUp ? `${r.runnerUp.label} ${pct(r.runnerUp.score)}` : '-'}   ${r.ms.toFixed(2)} ms`
+        : `shape    rejected: best ${r.top.label} ${pct(r.top.score)} < ${pct(tuning.recognizer.minScore)}   ${r.ms.toFixed(2)} ms`,
+  );
   lines.push(`filter   minCutoff ${tuning.filter.minCutoff}  beta ${tuning.filter.beta}  dCutoff ${tuning.filter.dCutoff}`);
   return lines;
 }

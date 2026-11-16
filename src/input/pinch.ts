@@ -40,7 +40,9 @@ export interface PenParams {
   lostGraceMs: number;
 }
 
-export const DEFAULT_PEN: PenParams = { press: 0.25, release: 0.4, lostGraceMs: 150 };
+// Tuned by playtest on the target laptop webcam (2026-11-16): fingertip landmarks sit
+// ~0.3-0.4 hand-sizes apart even when touching, so the band is higher than theory says.
+export const DEFAULT_PEN: PenParams = { press: 0.45, release: 0.7, lostGraceMs: 150 };
 
 /** Hysteresis state machine for pen up/down. Pure; feed it one observation per frame. */
 export class PenState {

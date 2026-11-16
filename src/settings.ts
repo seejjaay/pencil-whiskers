@@ -1,6 +1,7 @@
 import { DEFAULT_ONE_EURO, type OneEuroParams } from './input/oneEuro';
 import { DEFAULT_PEN, type PenParams } from './input/pinch';
 import { DEFAULT_RECORDER, type RecorderParams } from './input/strokes';
+import { DEFAULT_RECOGNIZER, type RecognizerParams } from './recognizer/recognizer';
 
 /**
  * Live-tunable input parameters. Objects are mutated in place by the tuning panel and are
@@ -10,12 +11,20 @@ export interface Tuning {
   filter: OneEuroParams;
   pen: PenParams;
   recorder: RecorderParams;
+  recognizer: RecognizerParams;
 }
+
+const GROUPS = ['filter', 'pen', 'recorder', 'recognizer'] as const;
 
 const KEY = 'pencil-whiskers.tuning.v1';
 
 export function defaultTuning(): Tuning {
-  return { filter: { ...DEFAULT_ONE_EURO }, pen: { ...DEFAULT_PEN }, recorder: { ...DEFAULT_RECORDER } };
+  return {
+    filter: { ...DEFAULT_ONE_EURO },
+    pen: { ...DEFAULT_PEN },
+    recorder: { ...DEFAULT_RECORDER },
+    recognizer: { ...DEFAULT_RECOGNIZER },
+  };
 }
 
 export function loadTuning(): Tuning {
@@ -24,7 +33,7 @@ export function loadTuning(): Tuning {
     const raw = localStorage.getItem(KEY);
     if (!raw) return t;
     const saved = JSON.parse(raw) as Partial<Tuning>;
-    for (const group of ['filter', 'pen', 'recorder'] as const) {
+    for (const group of GROUPS) {
       const target = t[group] as unknown as Record<string, number>;
       const src = (saved[group] ?? {}) as Record<string, unknown>;
       for (const k of Object.keys(target)) {
@@ -48,7 +57,5 @@ export function saveTuning(t: Tuning): void {
 /** Restores defaults in place (keeps the object identities the filters hold). */
 export function resetTuning(t: Tuning): void {
   const d = defaultTuning();
-  Object.assign(t.filter, d.filter);
-  Object.assign(t.pen, d.pen);
-  Object.assign(t.recorder, d.recorder);
+  for (const g of GROUPS) Object.assign(t[g], d[g]);
 }
