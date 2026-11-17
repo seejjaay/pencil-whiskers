@@ -15,7 +15,7 @@ export interface Threat {
   readonly kind: ThreatKind;
   /** 0..1 across the playfield. */
   readonly x: number;
-  /** 0 = just appeared at the top, 1 = reached Mochi. */
+  /** 0 = just appeared at the top, 1 = reached the cat. */
   y: number;
   /** Playfield heights per second. */
   readonly speed: number;
@@ -65,7 +65,7 @@ export type GameEvent =
   | { type: 'powerEnd'; kind: PowerKind };
 
 export const RULES = {
-  /** One nap heart: a single threat reaching Mochi wakes her (CJ, rules pass 2026-11-17). */
+  /** One nap heart: a single threat reaching the cat wakes him (CJ, rules pass 2026-11-17). */
   hearts: 1,
   /** Banner time before a wave's first threat. */
   introMs: 2200,
@@ -80,7 +80,7 @@ export const RULES = {
   /** A partial hit on a sequence threat nudges it back up a little. */
   knockback: 0.05,
   bossKnockback: 0.035,
-  /** Hearts lost when the boss reaches Mochi. */
+  /** Hearts lost when the boss reaches the cat. */
   bossHeartCost: 2,
   /** Defeat bonus multiplier for the boss. */
   bossBonusFactor: 2,

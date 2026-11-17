@@ -38,7 +38,7 @@ export interface WaveSpec {
   wave: number;
   /** Threats spawned in this wave (boss included). */
   threatCount: number;
-  /** Base fall speed in playfield heights per second (1 / seconds to reach Mochi). */
+  /** Base fall speed in playfield heights per second (1 / seconds to reach the cat). */
   speed: number;
   /** Average gap between spawns (each gap is jittered +-20%). */
   spawnEveryMs: number;

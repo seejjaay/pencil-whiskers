@@ -1,11 +1,12 @@
 /**
- * "Teach Mochi my shapes": walks through every shape, asks for a few drawings of each, and
+ * "Teach <cat> my shapes": walks through every shape, asks for a few drawings of each, and
  * stores them as personal templates. Strokes are routed here instead of the game while open.
  */
 import type { Pt, Recognizer } from '../recognizer/recognizer';
 import { SAMPLES_PER_SHAPE, checkSample, compactSample, countSamples, labelOf, type PersonalSet } from '../recognizer/personal';
 import { SHAPES } from '../recognizer/shapes';
 import { drawGlyph } from '../view/gameView';
+import { CAT_NAME } from '../cat';
 
 export interface CalibrationApi {
   open(current: PersonalSet): void;
@@ -23,7 +24,7 @@ export function mountCalibration(
   root.innerHTML = '';
   const title = document.createElement('h2');
   title.id = 'calib-title';
-  title.textContent = 'Teach Mochi your shapes';
+  title.textContent = `Teach ${CAT_NAME} your shapes`;
   const glyph = document.createElement('canvas');
   glyph.width = 120;
   glyph.height = 120;
@@ -60,7 +61,7 @@ export function mountCalibration(
     g.clearRect(0, 0, glyph.width, glyph.height);
     if (!finished) drawGlyph(g, shape().id, 60, 60, 70, '#d36f98', 7);
     prompt.textContent = finished
-      ? `Saved ${countSamples(set)} drawings. Mochi will know your style now.`
+      ? `Saved ${countSamples(set)} drawings. ${CAT_NAME} will know your style now.`
       : `Draw a ${labelOf(shape().id)}, your way (${samples.length + 1} of ${SAMPLES_PER_SHAPE}).`;
     dots.textContent = finished ? '' : `${'●'.repeat(samples.length)}${'○'.repeat(SAMPLES_PER_SHAPE - samples.length)}   shape ${index + 1} of ${SHAPES.length}`;
   };
@@ -88,7 +89,7 @@ export function mountCalibration(
     set = {};
     samples = [];
     hooks.onSave({});
-    feedback.textContent = 'Forgotten. Mochi uses the standard shapes again.';
+    feedback.textContent = `Forgotten. ${CAT_NAME} uses the standard shapes again.`;
     index = 0;
     finished = false;
     render();

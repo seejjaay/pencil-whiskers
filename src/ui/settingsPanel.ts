@@ -1,3 +1,4 @@
+import { CAT_NAME } from '../cat';
 import { savePrefs, type Prefs } from '../prefs';
 
 export interface SettingsApi {
@@ -60,7 +61,7 @@ export function mountSettings(
 
   const calibrate = document.createElement('button');
   calibrate.type = 'button';
-  calibrate.textContent = 'Teach Mochi my shapes';
+  calibrate.textContent = `Teach ${CAT_NAME} my shapes`;
   calibrate.addEventListener('click', hooks.onCalibrate);
 
   const close = document.createElement('button');

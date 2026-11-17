@@ -1,5 +1,5 @@
 /**
- * Draws the game: Mochi, threats with symbol bubbles, nap hearts, score, purr meter, wave
+ * Draws the game: the cat, threats with symbol bubbles, nap hearts, score, purr meter, wave
  * banners, reactions, particles and shake. Pure presentation: it reads the Game and reacts to
  * its events; it never changes the rules.
  */
@@ -7,7 +7,7 @@ import { RULES, type Game, type GameEvent, type Threat } from '../game/game';
 import type { Prefs } from '../prefs';
 import { SHAPES } from '../recognizer/shapes';
 import { CREAM, FONT, INK, PINK, PINK_DARK, circle, heartPath, outlined, phase, roundRect } from './art/draw';
-import { drawMochi, type Mood } from './art/mochi';
+import { drawCat, type Mood } from './art/cat';
 import { artFor } from './art/registry';
 import { Particles, Shake } from './particles';
 import { POWERS, POWER_RULES, powerDef, type PowerKind } from '../game/powerups';
@@ -22,17 +22,17 @@ export interface FieldGeom {
   right: number;
   /** Screen y of a threat at y = 0 (just arrived). */
   top: number;
-  /** Screen y of a threat at y = 1 (touching Mochi). */
+  /** Screen y of a threat at y = 1 (touching the cat). */
   bottom: number;
-  mochiX: number;
-  mochiY: number;
+  catX: number;
+  catY: number;
 }
 
 export function fieldGeom(w: number, h: number): FieldGeom {
   const margin = Math.min(110, w * 0.09);
-  const mochiY = h - 78;
+  const catY = h - 78;
   // top: low enough that a fresh threat's bubble clears the score and wave label above it
-  return { w, h, left: margin, right: w - margin, top: Math.round(Math.min(205, Math.max(150, h * 0.3))), bottom: mochiY - 76, mochiX: w / 2, mochiY };
+  return { w, h, left: margin, right: w - margin, top: Math.round(Math.min(205, Math.max(150, h * 0.3))), bottom: catY - 76, catX: w / 2, catY };
 }
 
 export function toScreen(g: FieldGeom, x: number, y: number): { x: number; y: number } {
@@ -195,12 +195,12 @@ export class GameView {
           break;
         }
         case 'miss':
-          this.pop('nyeh?', geom.mochiX + 100, geom.mochiY - 80, now, '#7d6f75', 22);
+          this.pop('nyeh?', geom.catX - 140, geom.catY - 40, now, '#7d6f75', 22);
           break;
         case 'escape':
-          this.setMood('startled', now, 900, geom.mochiX, geom);
-          this.pop('eep!', geom.mochiX - 100, geom.mochiY - 80, now, '#c2455f', 26);
-          this.particles.burst('dot', geom.mochiX, geom.mochiY - 40, 14, { colors: ['#d8d2cf', '#b9c3d6'], speed: [100, 260] });
+          this.setMood('startled', now, 900, geom.catX, geom);
+          this.pop('eep!', geom.catX, geom.catY - 118, now, '#c2455f', 26);
+          this.particles.burst('dot', geom.catX, geom.catY - 40, 14, { colors: ['#d8d2cf', '#b9c3d6'], speed: [100, 260] });
           this.kick(e.threat.boss ? 12 : 7);
           this.spawnTimes.delete(e.threat.id);
           break;
@@ -211,8 +211,8 @@ export class GameView {
           if (e.combo > 0 && e.combo % RULES.comboPerLevel === 0 && e.multiplier > 1 && e.combo <= RULES.comboPerLevel * (RULES.maxMultiplier - 1)) {
             this.purrFlashUntil = now + 900;
             this.pop(`purr x${e.multiplier}!`, geom.w - 150, geom.h - 100, now, PINK_DARK, 24);
-            this.particles.burst('heart', geom.mochiX, geom.mochiY - 50, 8, { up: 0.8, speed: [120, 220], size: [6, 10], colors: [PINK, '#ff8fb5'], gravity: 120 });
-            if (this.mood === 'sleep') this.setMood('happy', now, 700, geom.mochiX, geom);
+            this.particles.burst('heart', geom.catX, geom.catY - 50, 8, { up: 0.8, speed: [120, 220], size: [6, 10], colors: [PINK, '#ff8fb5'], gravity: 120 });
+            if (this.mood === 'sleep') this.setMood('happy', now, 700, geom.catX, geom);
           }
           break;
         case 'waveClear':
@@ -220,7 +220,7 @@ export class GameView {
           for (let i = 0; i < 5; i++) this.particles.burst('star', geom.w * (0.15 + i * 0.175), geom.top - 40, 5, { speed: [60, 160], gravity: 260, size: [6, 10] });
           break;
         case 'gameOver':
-          this.setMood('startled', now, 60_000, geom.mochiX, geom);
+          this.setMood('startled', now, 60_000, geom.catX, geom);
           break;
         case 'multiHit':
           this.pop(MULTI_WORDS[Math.min(e.count, MULTI_WORDS.length - 1)], geom.w / 2, geom.h * 0.5, now, PINK_DARK, 30);
@@ -256,7 +256,7 @@ export class GameView {
           }
           break;
         case 'powerEmpty':
-          this.pop(`no ${powerDef(e.kind).label} saved`, geom.mochiX + 110, geom.mochiY - 80, now, '#7d6f75', 18);
+          this.pop(`no ${powerDef(e.kind).label} saved`, geom.catX, geom.catY - 130, now, '#7d6f75', 18);
           break;
         case 'powerEnd':
           this.pop(e.kind === 'barrier' ? 'barrier down' : 'time back to normal', geom.w / 2, geom.h * 0.55, now, '#7d6f75', 18);
@@ -284,9 +284,9 @@ export class GameView {
     this.drawThreats(ctx, game, now, geom);
     this.drawGhosts(ctx, now, geom);
     if (game.barrierActive) this.drawBarrier(ctx, game, now, geom);
-    drawMochi(ctx, {
-      x: geom.mochiX,
-      y: geom.mochiY,
+    drawCat(ctx, {
+      x: geom.catX,
+      y: geom.catY,
       mood: this.mood,
       t: this.moodMs ? Math.min(1, (now - this.moodStart) / this.moodMs) : 0,
       now,
@@ -411,7 +411,7 @@ export class GameView {
     this.mood = mood;
     this.moodStart = now;
     this.moodMs = ms;
-    this.lean = Math.max(-1, Math.min(1, (targetX - geom.mochiX) / (geom.w / 2)));
+    this.lean = Math.max(-1, Math.min(1, (targetX - geom.catX) / (geom.w / 2)));
   }
 
   private drawThreats(ctx: CanvasRenderingContext2D, game: Game, now: number, geom: FieldGeom): void {

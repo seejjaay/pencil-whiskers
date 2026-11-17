@@ -12,6 +12,7 @@ import { drawRecognitionLabel } from './view/labels';
 import { Game } from './game/game';
 import { GameView, fieldGeom } from './view/gameView';
 import { mountPanel } from './ui/panel';
+import { CAT_NAME } from './cat';
 import { mountSettings } from './ui/settingsPanel';
 import { mountCalibration } from './ui/calibration';
 import { applyPersonal, countSamples, loadPersonal, savePersonal } from './recognizer/personal';
@@ -107,7 +108,7 @@ const MOUSE_NOTE = ' You can draw with the mouse meanwhile: hold the button and 
 function cameraErrorText(err: CameraError): [string, string] {
   switch (err.kind) {
     case 'denied':
-      return ['Camera blocked', 'Mochi can’t see your hand because camera access was blocked. Allow the camera from the icon in the address bar, then reload.' + MOUSE_NOTE];
+      return ['Camera blocked', `${CAT_NAME} can’t see your hand because camera access was blocked. Allow the camera from the icon in the address bar, then reload.` + MOUSE_NOTE];
     case 'not-found':
       return ['No camera found', 'No webcam was detected. Plug one in (or enable the built-in one), then reload.' + MOUSE_NOTE];
     case 'in-use':
@@ -320,7 +321,7 @@ function frame(now: number): void {
     strokeLog.commit(active.kind, ev.end, !kept, res);
     let good = kept && !!res?.accepted;
     if (calibration.active) {
-      // Teaching Mochi: every finished stroke is a calibration sample, never a game move.
+      // Calibrating: every finished stroke is a calibration sample, never a game move.
       if (kept) calibration.offer(ev.stroke.points);
       good = kept;
     } else if (res?.accepted && res.top) {
