@@ -55,7 +55,7 @@ describe('pinchPoint', () => {
 
 describe('PenState hysteresis', () => {
   it('goes down below press and up only above release', () => {
-    const pen = new PenState({ press: 0.25, release: 0.4, lostGraceMs: 150 });
+    const pen = new PenState({ press: 0.25, release: 0.4, lostGraceMs: 150, releaseHoldMs: 0 });
     expect(pen.update(0.5, 0)).toBe(false);
     expect(pen.update(0.3, 40)).toBe(false); // inside the band, still up
     expect(pen.update(0.2, 80)).toBe(true);
@@ -65,7 +65,7 @@ describe('PenState hysteresis', () => {
   });
 
   it('does not flicker when the ratio jitters around one threshold', () => {
-    const pen = new PenState({ press: 0.25, release: 0.4, lostGraceMs: 150 });
+    const pen = new PenState({ press: 0.25, release: 0.4, lostGraceMs: 150, releaseHoldMs: 0 });
     pen.update(0.2, 0);
     let flips = 0;
     let prev = true;
@@ -79,7 +79,7 @@ describe('PenState hysteresis', () => {
   });
 
   it('holds the pen down through a short tracking dropout, then lifts', () => {
-    const pen = new PenState({ press: 0.25, release: 0.4, lostGraceMs: 150 });
+    const pen = new PenState({ press: 0.25, release: 0.4, lostGraceMs: 150, releaseHoldMs: 0 });
     pen.update(0.1, 0);
     expect(pen.update(null, 40)).toBe(true);
     expect(pen.update(null, 120)).toBe(true);
@@ -95,10 +95,51 @@ describe('PenState hysteresis', () => {
   });
 
   it('enforces release > press even if misconfigured', () => {
-    const pen = new PenState({ press: 0.3, release: 0.2, lostGraceMs: 0 });
+    const pen = new PenState({ press: 0.3, release: 0.2, lostGraceMs: 0, releaseHoldMs: 0 });
     pen.update(0.25, 0);
     expect(pen.down).toBe(true);
     expect(pen.update(0.305, 10)).toBe(true); // within the forced 0.01 band
     expect(pen.update(0.32, 20)).toBe(false);
+  });
+});
+
+describe('PenState release hold', () => {
+  const params = { press: 0.4, release: 0.61, releaseHoldMs: 100, lostGraceMs: 250 };
+
+  it('rides out a one- or two-frame misread above release (fast-stroke motion blur)', () => {
+    const pen = new PenState({ ...params });
+    pen.update(0.2, 0);
+    expect(pen.update(0.9, 33)).toBe(true); // spike
+    expect(pen.releasing).toBe(true);
+    expect(pen.update(0.85, 66)).toBe(true); // still within the hold
+    expect(pen.update(0.3, 100)).toBe(true); // back inside the band: misread, keep drawing
+    expect(pen.releasing).toBe(false);
+    expect(pen.lastEnd).toBeNull();
+  });
+
+  it('lifts once the ratio stays above release for the hold, dated to when it first crossed', () => {
+    const pen = new PenState({ ...params });
+    pen.update(0.2, 0);
+    pen.update(0.7, 33);
+    pen.update(0.75, 66);
+    expect(pen.update(0.8, 99)).toBe(true); // 66 ms held: not yet
+    expect(pen.update(0.8, 133)).toBe(false); // 100 ms held: lifted
+    expect(pen.lastEnd).toEqual({ reason: 'release', at: 33 });
+  });
+
+  it('dates a hand-lost lift to the first frame without a hand', () => {
+    const pen = new PenState({ ...params });
+    pen.update(0.2, 0);
+    pen.update(null, 33);
+    pen.update(null, 200);
+    expect(pen.update(null, 283)).toBe(false);
+    expect(pen.lastEnd).toEqual({ reason: 'lost', at: 33 });
+  });
+
+  it('a hold of 0 lifts on the first frame above release', () => {
+    const pen = new PenState({ ...params, releaseHoldMs: 0 });
+    pen.update(0.2, 0);
+    expect(pen.update(0.7, 33)).toBe(false);
+    expect(pen.lastEnd).toEqual({ reason: 'release', at: 33 });
   });
 });

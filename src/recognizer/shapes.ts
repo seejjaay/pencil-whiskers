@@ -36,18 +36,24 @@ function circle(n = 32): [number, number][] {
 
 const H = Math.sqrt(3) / 2;
 
+// Ranges tuned on real camera strokes (tests/fixtures/real-strokes-2026-11-17.json), where
+// hand-drawn shapes at ~20 samples/s are lumpier than any textbook shape:
+//   circle   0-2 corners: real circles have flat sides and dents (7 of 13 read as 2 corners).
+//   triangle any rotation (players draw ▽ too), exactly 2 interior corners: 14 of 15 real
+//            triangles show 2, and squares (3) must not pass as triangles.
+//   V        1-2 corners: real V's are lopsided like check marks and pick up a stray wiggle.
 export const SHAPES: readonly ShapeDef[] = [
   { id: 'hline', label: 'horizontal line', points: [[0, 0], [1, 0]], rotationDeg: 25, bidirectional: true, corners: [0, 1] },
   { id: 'vline', label: 'vertical line', points: [[0, 0], [0, 1]], rotationDeg: 25, bidirectional: true, corners: [0, 1] },
-  { id: 'circle', label: 'circle', points: circle(), rotationDeg: 180, bidirectional: true, corners: [0, 1] },
+  { id: 'circle', label: 'circle', points: circle(), rotationDeg: 180, bidirectional: true, corners: [0, 2] },
   {
     id: 'triangle',
     label: 'triangle',
     points: [[0.5, 0], [1, H], [0, H], [0.5, 0]],
-    rotationDeg: 25,
+    rotationDeg: 180,
     bidirectional: true,
     closed: true,
-    corners: [2, 3],
+    corners: [2, 2],
   },
-  { id: 'v', label: 'V', points: [[0, 0], [0.5, 1], [1, 0]], rotationDeg: 20, bidirectional: true, corners: [1, 1] },
+  { id: 'v', label: 'V', points: [[0, 0], [0.5, 1], [1, 0]], rotationDeg: 20, bidirectional: true, corners: [1, 2] },
 ];

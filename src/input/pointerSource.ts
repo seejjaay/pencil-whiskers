@@ -2,7 +2,7 @@ import type { TrackResult, TrackerClient } from '../tracking/trackerClient';
 import type { CoverMap } from '../view/coverMap';
 import { OneEuro2D, type OneEuroParams } from './oneEuro';
 import { PenState, pinchPoint, pinchRatio, type PenParams } from './pinch';
-import type { PointerSample } from './strokes';
+import type { PointerSample, StrokeEnd } from './strokes';
 
 export interface CursorState {
   x: number;
@@ -32,12 +32,14 @@ const MAX_QUEUE = 256;
 export interface CameraSourceDebug {
   ratio: number;
   down: boolean;
+  /** Pen down, ratio above release, hold running. */
+  releasing: boolean;
   hand: boolean;
 }
 
 export class CameraPointerSource implements PointerSource {
   readonly kind = 'camera';
-  readonly debug: CameraSourceDebug = { ratio: NaN, down: false, hand: false };
+  readonly debug: CameraSourceDebug = { ratio: NaN, down: false, releasing: false, hand: false };
   private queue: PointerSample[] = [];
   private last: CursorState | null = null;
   private lastHandAt = -Infinity;
@@ -66,28 +68,45 @@ export class CameraPointerSource implements PointerSource {
       const wasDown = this.pen.down;
       const down = this.pen.update(null, t);
       this.debug.down = down;
+      this.debug.releasing = false;
       // Pen lifted by losing the hand: emit the release so the recorder closes the stroke.
-      if (wasDown && !down && this.last) this.push({ x: this.last.x, y: this.last.y, t, down: false });
+      if (wasDown && !down && this.last) this.pushEnd(this.last.x, this.last.y, NaN);
       if (down && this.last) this.last = { ...this.last, t };
       return;
     }
     const lm = r.hand.landmarks;
     const size = this.getImageSize();
     const ratio = pinchRatio(lm, size.width, size.height);
+    const wasDown = this.pen.down;
     const down = this.pen.update(Number.isFinite(ratio) ? ratio : null, t);
     this.debug.ratio = ratio;
     this.debug.down = down;
+    this.debug.releasing = this.pen.releasing;
     this.debug.hand = true;
 
     const n = pinchPoint(lm);
     const raw = this.getMap()(n.x, n.y);
-    if (!Number.isFinite(raw.x) || !Number.isFinite(raw.y)) return;
+    if (!Number.isFinite(raw.x) || !Number.isFinite(raw.y)) {
+      if (wasDown && !down && this.last) this.pushEnd(this.last.x, this.last.y, ratio);
+      return;
+    }
     // Hand reappeared after a gap: restart the filter so it doesn't glide from the old spot.
     if (t - this.lastHandAt > 250) this.filter.reset();
     this.lastHandAt = t;
     const p = this.filter.filter(raw.x, raw.y, t);
     this.last = { x: p.x, y: p.y, down, t };
-    this.push({ x: p.x, y: p.y, t, down });
+    if (wasDown && !down) this.pushEnd(p.x, p.y, ratio);
+    else this.push({ x: p.x, y: p.y, t, down, ratio });
+  }
+
+  /**
+   * Pen-up sample stamped just before the moment the lift really began (see PenState.lastEnd),
+   * so the recorder drops the frames recorded while the release hold / lost grace was running.
+   */
+  private pushEnd(x: number, y: number, ratio: number): void {
+    const end = this.pen.lastEnd;
+    const t = end ? end.at - 0.5 : performance.now();
+    this.push({ x, y, t, down: false, ratio, end: end?.reason ?? 'release' });
   }
 
   private push(s: PointerSample): void {
@@ -136,8 +155,8 @@ export class MousePointerSource implements PointerSource {
     el.addEventListener('pointerleave', this.onLeave, opts);
   }
 
-  private sample(e: PointerEvent, down: boolean): void {
-    const s = { x: e.clientX, y: e.clientY, t: e.timeStamp, down };
+  private sample(e: PointerEvent, down: boolean, end?: StrokeEnd): void {
+    const s: PointerSample = { x: e.clientX, y: e.clientY, t: e.timeStamp, down, end };
     this.queue.push(s);
     if (this.queue.length > MAX_QUEUE) this.queue.shift();
     this.last = s;
@@ -163,7 +182,7 @@ export class MousePointerSource implements PointerSource {
   private onUp = (e: PointerEvent) => {
     if (!this.down) return;
     this.down = false;
-    this.sample(e, false);
+    this.sample(e, false, 'mouse');
   };
 
   private onLeave = () => {

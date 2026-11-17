@@ -2,7 +2,9 @@ import { CameraError, openCamera, openFakeCamera } from './camera/camera';
 import { RenderStats, renderHud, snapshot } from './debug/hud';
 import { mountTuningPanel } from './debug/tuning';
 import { CameraPointerSource, MousePointerSource, type CursorState, type PointerSource } from './input/pointerSource';
-import { StrokeRecorder, pathLength, type Stroke } from './input/strokes';
+import { INTENT_NONE, StrokeLog, downloadText } from './debug/strokeLog';
+import { StrokeRecorder, pathLength, smoothStroke, type Stroke } from './input/strokes';
+import { readStroke } from './recognizer/pipeline';
 import { Recognizer, type Recognition } from './recognizer/recognizer';
 import { SHAPES } from './recognizer/shapes';
 import { loadTuning } from './settings';
@@ -28,6 +30,7 @@ const statusEl = document.querySelector<HTMLDivElement>('#status')!;
 const statusBtn = statusEl.querySelector<HTMLButtonElement>('button')!;
 const modeBtn = document.querySelector<HTMLButtonElement>('#mode')!;
 const tuningEl = document.querySelector<HTMLDivElement>('#tuning')!;
+const toastEl = document.querySelector<HTMLDivElement>('#toast')!;
 const ctx = canvas.getContext('2d', { alpha: true })!;
 
 hud.hidden = params.get('hud') === '0';
@@ -35,6 +38,33 @@ const tuning = loadTuning();
 const tuningPanel = mountTuningPanel(tuningEl, tuning);
 
 // ---- status card: non-blocking while loading, with a dismiss button for errors
+// ---- toast: short confirmations that never block drawing
+let toastTimer = 0;
+function toast(text: string): void {
+  toastEl.textContent = text;
+  toastEl.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (toastEl.hidden = true), 1800);
+}
+
+// ---- stroke log: number keys declare what you're about to draw, L saves the log as a file
+const INTENT_KEYS = [...SHAPES.map((s) => s.id), INTENT_NONE];
+function intentLabel(intent: string): string {
+  return intent === INTENT_NONE ? 'not-a-shape' : (SHAPES.find((s) => s.id === intent)?.label ?? intent);
+}
+function saveStrokeLog(): void {
+  if (strokeLog.entries.length === 0) {
+    toast('Nothing to save yet: draw some strokes first');
+    return;
+  }
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  downloadText(
+    `pencil-whiskers-strokes-${stamp}.json`,
+    strokeLog.toJSON({ savedAt: new Date().toISOString(), view: [viewW, viewH], tuning, stats: strokeLog.stats() }),
+  );
+  toast(`Saved ${strokeLog.entries.length} strokes to your Downloads folder`);
+}
+
 function showStatus(title: string, body: string, isError = false): void {
   statusEl.hidden = false;
   statusEl.classList.toggle('error', isError);
@@ -86,13 +116,17 @@ let active: PointerSource = mouse;
 const recorder = new StrokeRecorder(tuning.recorder);
 const recognizer = new Recognizer(SHAPES, tuning.recognizer);
 let lastRecognition: Recognition | null = null;
+const strokeLog = new StrokeLog();
+// Warm up: the first recognition pays for JIT compilation (~15 ms measured). Pay it at boot,
+// not on the player's first stroke.
+recognizer.recognize(Array.from({ length: 24 }, (_, i) => ({ x: Math.cos(i / 4) * 100, y: Math.sin(i / 4) * 100 })));
 
 function setMode(kind: 'camera' | 'mouse'): void {
   if (kind === 'camera' && !camera) return;
   const next = kind === 'camera' ? camera! : mouse;
   if (next === active) return;
-  recorder.finish(performance.now()); // abandon a half-drawn stroke
-  recorder.current = null;
+  recorder.finish(performance.now(), 'switch'); // abandon a half-drawn stroke
+  strokeLog.dropPending();
   active.reset();
   next.reset();
   active = next;
@@ -160,18 +194,22 @@ function frame(now: number): void {
   const inactive = active === mouse ? camera : mouse;
   inactive?.drain();
   for (const s of active.drain()) {
+    strokeLog.sample(s);
     const ev = recorder.push(s);
     if (!ev) continue;
-    const res = ev.type === 'stroke' ? recognizer.recognize(ev.stroke.points) : null;
-    shown.push({ stroke: ev.stroke, kept: ev.type === 'stroke', at: now, res });
+    const kept = ev.type === 'stroke';
+    const read = kept ? readStroke(recognizer, ev.stroke, tuning.recorder.smoothPasses) : null;
+    const res = read?.result ?? null;
+    const stroke = read?.stroke ?? ev.stroke;
+    strokeLog.commit(active.kind, ev.end, !kept, res);
+    shown.push({ stroke, kept, at: now, res });
     if (res) {
       lastRecognition = res;
-      if (BENCH) console.log('[shape]', JSON.stringify({ mode: active.kind, accepted: res.accepted, top: res.top, runnerUp: res.runnerUp, ms: res.ms, points: ev.stroke.points.length }));
+      if (BENCH) console.log('[shape]', JSON.stringify({ mode: active.kind, end: ev.end, accepted: res.accepted, top: res.top, runnerUp: res.runnerUp, ms: res.ms, points: stroke.points.length }));
     }
-    if (ev.type === 'stroke') {
+    if (kept) {
       strokesKept++;
-      const st = ev.stroke;
-      lastStrokeInfo = `${st.points.length} pts, ${Math.round(st.endT - st.startT)} ms, ${Math.round(pathLength(st.points))} px`;
+      lastStrokeInfo = `${stroke.points.length} pts, ${Math.round(stroke.endT - stroke.startT)} ms, ${Math.round(pathLength(stroke.points))} px, ended: ${ev.end}`;
     } else {
       strokesDiscarded++;
     }
@@ -194,7 +232,7 @@ function frame(now: number): void {
     if (s.res) drawRecognitionLabel(ctx, s.stroke.points, s.res, 1 - f * f * f);
   }
   const cur = recorder.current;
-  if (cur) drawYarn(ctx, cur.points, YARN_PINK, { head: displayCursor?.down ? displayCursor : null });
+  if (cur) drawYarn(ctx, smoothStroke(cur.points, tuning.recorder.smoothPasses), YARN_PINK, { head: displayCursor?.down ? displayCursor : null });
   if (displayCursor) drawCursor(ctx, displayCursor, now);
 
   renderStats.frame(now, performance.now() - t0);
@@ -233,7 +271,7 @@ function hudLines(): string[] {
     const d = camera.debug;
     const ratio = Number.isFinite(d.ratio) ? d.ratio.toFixed(2) : '-';
     lines.push(
-      `pen      ${d.down ? 'DOWN' : 'up  '}   pinch ${ratio}  (down < ${tuning.pen.press.toFixed(2)}, up > ${tuning.pen.release.toFixed(2)})${d.hand ? '' : '  no hand'}`,
+      `pen      ${d.down ? (d.releasing ? 'DOWN (lifting)' : 'DOWN') : 'up  '}   pinch ${ratio}  (down < ${tuning.pen.press.toFixed(2)}, up > ${tuning.pen.release.toFixed(2)})${d.hand ? '' : '  no hand'}`,
     );
   } else {
     lines.push(`pen      ${displayCursor?.down ? 'DOWN' : 'up  '}   mouse${camera ? '' : ' (camera off)'}`);
@@ -249,6 +287,12 @@ function hudLines(): string[] {
         : `shape    rejected: best ${r.top.label} ${pct(r.top.score)} < ${pct(tuning.recognizer.minScore)}   ${r.ms.toFixed(2)} ms`,
   );
   lines.push(`filter   minCutoff ${tuning.filter.minCutoff}  beta ${tuning.filter.beta}  dCutoff ${tuning.filter.dCutoff}`);
+  const stats = strokeLog
+    .stats()
+    .map((s) => `${intentLabel(s.intent)} ${s.ok}/${s.n}${s.taps ? ` (+${s.taps} taps)` : ''}`)
+    .join('   ');
+  lines.push(`tagging  ${strokeLog.intent ? intentLabel(strokeLog.intent) : 'off'}   ${stats}`);
+  lines.push(`[D] hud  [M] camera/mouse  [T] tuning  [1-${INTENT_KEYS.length}] tag  [0] untag  [L] save log`);
   return lines;
 }
 
@@ -276,6 +320,17 @@ window.addEventListener('keydown', (e) => {
   if (k === 'd') hud.hidden = !hud.hidden;
   else if (k === 'm') setMode(active.kind === 'camera' ? 'mouse' : 'camera');
   else if (k === 't') tuningPanel.toggle();
+  else if (k === 'l') saveStrokeLog();
+  else if (/^[0-9]$/.test(k)) {
+    const n = Number(k);
+    if (n === 0) {
+      strokeLog.setIntent(null, e.timeStamp);
+      toast('Tagging off');
+    } else if (n <= INTENT_KEYS.length) {
+      strokeLog.setIntent(INTENT_KEYS[n - 1], e.timeStamp);
+      toast(`Tagging next strokes as: ${intentLabel(INTENT_KEYS[n - 1])}`);
+    }
+  }
 });
 
 // ---- boot

@@ -31,49 +31,80 @@ export function pinchPoint(lm: ArrayLike<number>): { x: number; y: number } {
   return { x: (lm[t] + lm[i]) / 2, y: (lm[t + 1] + lm[i + 1]) / 2 };
 }
 
+export type PenEnd = 'release' | 'lost';
+
 export interface PenParams {
   /** Ratio below which the pen goes down. */
   press: number;
   /** Ratio above which the pen comes back up. Must be > press (hysteresis band). */
   release: number;
+  /**
+   * The ratio must stay above `release` this long before the pen lifts. Rides out one- or
+   * two-frame pinch misreads (motion blur on fast strokes), which otherwise cut a stroke in
+   * two and throw the short piece away as a tap.
+   */
+  releaseHoldMs: number;
   /** Keep the pen down this long through dropped hand detections. */
   lostGraceMs: number;
 }
 
-// Tuned by playtest on the target laptop webcam (2026-11-16): fingertip landmarks sit
-// ~0.3-0.4 hand-sizes apart even when touching, so the band is higher than theory says.
-export const DEFAULT_PEN: PenParams = { press: 0.45, release: 0.7, lostGraceMs: 150 };
+// press/release from CJ's playtests on the target laptop webcam (2026-11-16/17): fingertip
+// landmarks sit ~0.3 hand-sizes apart even when touching, so the band is higher than theory.
+export const DEFAULT_PEN: PenParams = { press: 0.4, release: 0.61, releaseHoldMs: 100, lostGraceMs: 250 };
 
-/** Hysteresis state machine for pen up/down. Pure; feed it one observation per frame. */
+/** Hysteresis + hold state machine for pen up/down. Pure; feed it one observation per frame. */
 export class PenState {
   down = false;
+  /**
+   * Why and when the pen last lifted. `at` is when the lift really began (first frame above
+   * `release`, or first frame without a hand), not when the hold/grace confirmed it, so
+   * the frames recorded in between can be dropped from the stroke.
+   */
+  lastEnd: { reason: PenEnd; at: number } | null = null;
   private lostSince = NaN;
+  private releaseSince = NaN;
 
   constructor(public params: PenParams = { ...DEFAULT_PEN }) {}
+
+  /** Pen is down but the ratio is above `release` and the hold is running. */
+  get releasing(): boolean {
+    return this.down && !Number.isNaN(this.releaseSince);
+  }
 
   /** `ratio` is null when no hand was detected this frame. Returns the new pen state. */
   update(ratio: number | null, tMs: number): boolean {
     if (ratio === null || !Number.isFinite(ratio)) {
+      this.releaseSince = NaN;
       if (!this.down) return false;
       if (Number.isNaN(this.lostSince)) this.lostSince = tMs;
-      if (tMs - this.lostSince >= this.params.lostGraceMs) {
-        this.down = false;
-        this.lostSince = NaN;
-      }
+      if (tMs - this.lostSince >= this.params.lostGraceMs) this.lift('lost', this.lostSince);
       return this.down;
     }
     this.lostSince = NaN;
     const release = Math.max(this.params.release, this.params.press + 0.01);
     if (this.down) {
-      if (ratio > release) this.down = false;
+      if (ratio > release) {
+        if (Number.isNaN(this.releaseSince)) this.releaseSince = tMs;
+        if (tMs - this.releaseSince >= this.params.releaseHoldMs) this.lift('release', this.releaseSince);
+      } else {
+        this.releaseSince = NaN; // misread: back inside the band, keep drawing
+      }
     } else if (ratio < this.params.press) {
       this.down = true;
     }
     return this.down;
   }
 
+  private lift(reason: PenEnd, at: number): void {
+    this.down = false;
+    this.lastEnd = { reason, at };
+    this.lostSince = NaN;
+    this.releaseSince = NaN;
+  }
+
   reset(): void {
     this.down = false;
     this.lostSince = NaN;
+    this.releaseSince = NaN;
   }
 }

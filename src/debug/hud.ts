@@ -88,6 +88,5 @@ export function renderHud(el: HTMLElement, s: Snapshot, extra: string[]): void {
     `latency  grab→result p50 ${fmt(s.grabToResultP50)} / p95 ${fmt(s.grabToResultP95)} ms`,
     `         capture→result p50 ${fmt(s.captureToResultP50)} / p95 ${fmt(s.captureToResultP95)} ms`,
     ...extra,
-    `[D] hud  [M] camera/mouse  [T] tuning`,
   ].join('\n');
 }

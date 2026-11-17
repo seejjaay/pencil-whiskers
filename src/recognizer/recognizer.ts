@@ -23,8 +23,6 @@ const SIZE = 250;
 const HALF_DIAGONAL = 0.5 * Math.sqrt(2 * SIZE * SIZE);
 /** Elongation at or below this counts as a 1D gesture (scaled uniformly). */
 const ONE_D_RATIO = 0.2;
-/** Score deducted per corner outside a template's expected range. */
-const CORNER_PENALTY = 0.12;
 const PHI = 0.5 * (-1 + Math.sqrt(5));
 const ANGLE_PRECISION = (2 * Math.PI) / 180;
 const FULL_SEARCH = (45 * Math.PI) / 180;
@@ -316,9 +314,13 @@ export interface Recognition {
 export interface RecognizerParams {
   /** Reject anything scoring below this. */
   minScore: number;
+  /** Score deducted per corner outside a shape's expected range. */
+  cornerPenalty: number;
 }
 
-export const DEFAULT_RECOGNIZER: RecognizerParams = { minScore: 0.78 };
+// From a sweep over real camera strokes + the synthetic suite (2026-11-17): 0.74 / 0.20 kept
+// 93% of real shapes while rejecting >= 96% of every synthetic non-shape family.
+export const DEFAULT_RECOGNIZER: RecognizerParams = { minScore: 0.74, cornerPenalty: 0.2 };
 
 export class Recognizer {
   private templates: Template[] = [];
@@ -390,7 +392,7 @@ export class Recognizer {
       }
       if (t.corners) {
         const off = corners < t.corners[0] ? t.corners[0] - corners : corners > t.corners[1] ? corners - t.corners[1] : 0;
-        score -= off * CORNER_PENALTY;
+        score -= off * this.params.cornerPenalty;
       }
       score = Math.max(0, score);
       const prev = bestById.get(t.id);
