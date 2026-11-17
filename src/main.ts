@@ -531,3 +531,10 @@ async function boot(): Promise<void> {
 }
 
 void boot();
+
+// Offline play after the first visit (production builds only; dev never caches).
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('[offline] service worker not registered:', err));
+  });
+}
