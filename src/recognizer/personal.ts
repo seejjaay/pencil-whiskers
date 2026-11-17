@@ -3,7 +3,7 @@
  * those strokes join the standard templates, so the recognizer learns their hand. Samples
  * keep each shape's own rules (rotation tolerance, corner range) from shapes.ts.
  */
-import { countCorners, pathLength, resample, type Pt, type Recognizer } from './recognizer';
+import { countCorners, pathLength, resample, templateOptions, type Pt, type Recognizer } from './recognizer';
 import { SHAPES } from './shapes';
 
 export const SAMPLES_PER_SHAPE = 3;
@@ -57,7 +57,7 @@ export function applyPersonal(rec: Recognizer, set: PersonalSet): void {
         corners = [Math.min(corners[0], c), Math.max(corners[1], c)];
       }
     }
-    for (const sample of samples) rec.addPersonal(def.id, def.label, sample, def.rotationDeg, corners);
+    for (const sample of samples) rec.addPersonal(def.id, def.label, sample, { ...templateOptions(def), corners });
   }
 }
 

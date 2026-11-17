@@ -1,5 +1,6 @@
 import { Game, type GameEvent } from '../../src/game/game';
 import { createRng } from '../../src/game/rng';
+import { powerDef, type PowerKind } from '../../src/game/powerups';
 
 export interface BotSkill {
   /** Time to draw one shape, from deciding to the stroke being recognised. */
@@ -37,10 +38,18 @@ export function playBot(seed: number, skill: BotSkill | null, opts: { maxWave?: 
     }
     if (!pending) {
       const ready = g.threats.filter((t) => g.time - t.spawnedAt >= skill.reactMs);
-      if (ready.length === 0) continue;
-      const target = ready.reduce((a, b) => (b.y > a.y ? b : a));
-      const recognised = r.chance(skill.accuracy);
-      pending = { at: g.time + skill.strokeMs, shape: recognised ? target.symbols[target.cleared] : null };
+      const lowest = ready.length ? ready.reduce((a, b) => (b.y > a.y ? b : a)) : null;
+      const has = (k: PowerKind) => g.inventory.includes(k);
+      let shape: string | null = null;
+      // Use powers like a sensible player: erase a crowd, otherwise buy time when one gets close.
+      if (has('erase') && g.threats.length >= 3) shape = powerDef('erase').useShape;
+      else if (lowest && lowest.y > 0.72 && has('barrier') && !g.barrierActive) shape = powerDef('barrier').useShape;
+      else if (lowest && lowest.y > 0.72 && has('slow') && !g.slowActive) shape = powerDef('slow').useShape;
+      // Grab a falling power-up when nothing is urgent.
+      else if (g.items.length && (!lowest || lowest.y < 0.55)) shape = g.items[0].symbol;
+      else if (lowest) shape = lowest.symbols[lowest.cleared];
+      if (shape === null) continue;
+      pending = { at: g.time + skill.strokeMs, shape: r.chance(skill.accuracy) ? shape : null };
     }
   }
   return { wave: g.wave, score: g.score, over: g.phase === 'gameover', timeMs: g.time, events };

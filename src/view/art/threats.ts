@@ -326,3 +326,19 @@ function drawTub(ctx: CanvasRenderingContext2D, now: number, ph: number, blink: 
   }
   face(ctx, 0, 0, boss ? 'ovals' : 'dots', boss ? 'grit' : 'frown', boss, blink, 12);
 }
+
+/** Stand-in look for an entity that has no art yet: a soft blob with a face and its name. */
+export function drawPlaceholderEntity(ctx: CanvasRenderingContext2D, label: string, now: number, id: number): void {
+  let h = 0;
+  for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) % 360;
+  const blink = ((now / 3200 + phase(id)) % 1) > 0.965;
+  roundRect(ctx, 0, 0, 72, 54, 22);
+  outlined(ctx, `hsl(${h} 60% 82%)`);
+  face(ctx, 0, -4, 'dots', 'frown', true, blink);
+  ctx.save();
+  ctx.font = `700 12px ${FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = INK;
+  ctx.fillText(label, 0, 44);
+  ctx.restore();
+}

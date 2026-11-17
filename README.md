@@ -27,7 +27,8 @@ Open http://localhost:5173 and allow the camera. No camera? It falls back to the
 | Pause | P or Esc (switching tabs pauses too) |
 | Settings | Sound, screen shake, camera tint, and "Teach Mochi my shapes" calibration |
 | Camera / mouse | M |
-| Debug | D: performance HUD · T: input tuning · 1-6 then L: tag and save strokes |
+| Debug | D: performance HUD · T: input tuning · [ and ] then L: tag and save strokes |
+| Power-ups | Draw a falling gift's shape to save it; draw spiral (slow time), ∞ (erase all) or ∩ (barrier) to use it |
 
 URL options: `?seed=123` replays the same game, `?wave=5` starts at the first boss,
 `?mouse` skips the camera, `?debug` shows the HUD, `?bench` logs performance numbers.

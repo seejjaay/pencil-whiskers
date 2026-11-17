@@ -1,25 +1,24 @@
-/** Household threats, one new kind unlocked per wave. All original, drawn with shapes. */
-export type ThreatKind = 'vacuum' | 'sprayBottle' | 'cucumber' | 'bathTub' | 'thunderCloud' | 'doorbell' | 'bathTime';
+import { ENTITIES, entitiesFor, type EntityId } from './entities';
 
-/** Regular threats (the boss, 'bathTime', only appears in boss waves). */
-export const THREAT_KINDS: readonly ThreatKind[] = ['vacuum', 'sprayBottle', 'cucumber', 'bathTub', 'thunderCloud', 'doorbell'];
+/** Threat kinds are entity ids from the entity table (src/game/entities.ts). */
+export type ThreatKind = EntityId;
 
-/** Some threats drift a little faster or slower than the wave's base speed. */
-export const KIND_SPEED: Readonly<Record<ThreatKind, number>> = {
-  vacuum: 1,
-  sprayBottle: 1.1,
-  cucumber: 0.9,
-  bathTub: 0.8,
-  thunderCloud: 1,
-  doorbell: 1.2,
-  bathTime: 1,
-};
+/** Regular threats (the boss only appears in boss waves). */
+export const THREAT_KINDS: readonly ThreatKind[] = ENTITIES.filter((e) => !('boss' in e && e.boss)).map((e) => e.id);
 
 /**
  * Shapes are introduced one wave at a time: lines first (easiest to draw in the air and the
  * most reliably recognised), triangle last. Ids match src/recognizer/shapes.ts (a test checks).
  */
-export const SHAPE_UNLOCKS: readonly (readonly string[])[] = [['hline', 'vline'], ['circle'], ['v'], ['triangle']];
+export const SHAPE_UNLOCKS: readonly (readonly string[])[] = [
+  ['hline', 'vline'],
+  ['circle'],
+  ['v', 'square'],
+  ['triangle', 'w'],
+  [], // wave 5: the first boss, no new shape
+  ['lightning'],
+  ['heart'],
+];
 
 /** Every BOSS_EVERY-th wave is a boss wave: the giant "Bath Time" tub and a few escorts. */
 export const BOSS_EVERY = 5;
@@ -66,7 +65,7 @@ export function waveSpec(wave: number): WaveSpec {
     spawnEveryMs: Math.max(1100, 3400 - 250 * (n - 1)),
     maxOnScreen: Math.min(6, 2 + Math.floor((n - 1) / 2)),
     shapes: SHAPE_UNLOCKS.slice(0, Math.min(n, SHAPE_UNLOCKS.length)).flat(),
-    kinds: THREAT_KINDS.slice(0, Math.min(THREAT_KINDS.length, n + 1)),
+    kinds: entitiesFor(n),
     seqChance: n < 3 ? 0 : n < 5 ? 0.3 : 0.45,
     seqMax: n < 5 ? 2 : 3,
     boss: null,

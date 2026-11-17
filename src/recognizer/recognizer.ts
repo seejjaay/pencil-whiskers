@@ -175,7 +175,7 @@ export function countCorners(pts: readonly Pt[], k = 8, thresholdDeg = 65): numb
   return corners;
 }
 
-function scaleToBox(pts: readonly Pt[]): Pt[] {
+function scaleToBox(pts: readonly Pt[], forceUniform = false): Pt[] {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -190,7 +190,7 @@ function scaleToBox(pts: readonly Pt[]): Pt[] {
   const h = maxY - minY;
   const big = Math.max(w, h);
   if (big === 0) return pts.map(() => ({ x: 0, y: 0 }));
-  const uniform = elongation(pts) <= ONE_D_RATIO || Math.min(w, h) === 0;
+  const uniform = forceUniform || elongation(pts) <= ONE_D_RATIO || Math.min(w, h) === 0;
   const sx = uniform ? SIZE / big : SIZE / w;
   const sy = uniform ? SIZE / big : SIZE / h;
   return pts.map((p) => ({ x: p.x * sx, y: p.y * sy }));
@@ -202,10 +202,10 @@ function translateToOrigin(pts: readonly Pt[]): Pt[] {
 }
 
 /** Full $1 preprocessing. `alignRotation` = rotate to the indicative angle first. */
-export function normalize(points: readonly Pt[], alignRotation: boolean): Pt[] {
+export function normalize(points: readonly Pt[], alignRotation: boolean, uniformScale = false): Pt[] {
   let pts = resample(points);
   if (alignRotation) pts = rotateBy(pts, -indicativeAngle(pts));
-  return translateToOrigin(scaleToBox(pts));
+  return translateToOrigin(scaleToBox(pts, uniformScale));
 }
 
 function pathDistance(a: readonly Pt[], b: readonly Pt[]): number {
@@ -260,6 +260,8 @@ interface Template {
   /** Normalized points. */
   pts: Pt[];
   fullRotation: boolean;
+  /** Normalised keeping proportions (see ShapeDef.uniformScale). */
+  uniform: boolean;
   /** Search range in radians. */
   range: number;
   /** Rotation allowed without penalty, radians. */
@@ -269,6 +271,10 @@ interface Template {
   /** Expected interior corner count [min, max]; null = don't check. */
   corners: readonly [number, number] | null;
   personal: boolean;
+  /** A power-up activation shape (role 'power'): must clear the bar by `powerMargin`. */
+  power: boolean;
+  /** Max end-to-end gap as a fraction of the stroke's size (ShapeDef.maxGap); null = any. */
+  maxGap: number | null;
 }
 
 /** All accepted drawing orders for a shape definition. */
@@ -277,7 +283,9 @@ export function expandVariants(def: ShapeDef): Pt[][] {
   const starts: Pt[][] = [];
   if (def.closed && base.length > 2) {
     const ring = base.slice(0, -1); // drop the duplicated closing vertex
-    for (let s = 0; s < ring.length; s++) {
+    const allowed = def.starts ?? ring.map((_, i) => i);
+    for (const s of allowed) {
+      if (s < 0 || s >= ring.length) continue;
       const seq = [...ring.slice(s), ...ring.slice(0, s)];
       starts.push([...seq, seq[0]]);
     }
@@ -293,6 +301,20 @@ export function expandVariants(def: ShapeDef): Pt[][] {
 }
 
 // ---------- recognizer
+
+/** How a template is matched; standard shapes derive it from their ShapeDef. */
+export interface TemplateOptions {
+  rotationDeg: number;
+  corners?: readonly [number, number] | null;
+  uniformScale?: boolean;
+  /** Power-up activation shape: must clear the bar by `powerMargin`. */
+  power?: boolean;
+  maxGap?: number | null;
+}
+
+export function templateOptions(def: ShapeDef): TemplateOptions {
+  return { rotationDeg: def.rotationDeg, corners: def.corners ?? null, uniformScale: def.uniformScale ?? false, power: def.role === 'power', maxGap: def.maxGap ?? null };
+}
 
 export interface Match {
   id: string;
@@ -321,11 +343,17 @@ export interface RecognizerParams {
    * strokes: without it, a junk stroke matched a personal V at 0.759 (standard: 0.663).
    */
   personalMargin: number;
+  /**
+   * Power-up activation shapes must beat the threshold by this much: firing a saved power by
+   * accident costs more than redrawing one. Measured on real strokes: a junk stroke reached the
+   * figure-8 (erase all) without it.
+   */
+  powerMargin: number;
 }
 
 // From a sweep over real camera strokes + the synthetic suite (2026-11-17): 0.74 / 0.20 kept
 // 93% of real shapes while rejecting >= 96% of every synthetic non-shape family.
-export const DEFAULT_RECOGNIZER: RecognizerParams = { minScore: 0.74, cornerPenalty: 0.2, personalMargin: 0.03 };
+export const DEFAULT_RECOGNIZER: RecognizerParams = { minScore: 0.74, cornerPenalty: 0.2, personalMargin: 0.03, powerMargin: 0.04 };
 
 export class Recognizer {
   private templates: Template[] = [];
@@ -342,38 +370,36 @@ export class Recognizer {
   }
 
   addShape(def: ShapeDef): void {
-    for (const v of expandVariants(def)) this.addTemplate(def.id, def.label, v, def.rotationDeg, def.corners ?? null, false);
+    const opts = templateOptions(def);
+    for (const v of expandVariants(def)) this.addTemplate(def.id, def.label, v, opts, false);
   }
 
   /** A player's own recording of a shape (calibration, Milestone 4). */
-  addPersonal(id: string, label: string, points: readonly Pt[], rotationDeg: number, corners: readonly [number, number] | null = null): void {
-    this.addTemplate(id, label, points, rotationDeg, corners, true);
+  addPersonal(id: string, label: string, points: readonly Pt[], opts: TemplateOptions): void {
+    this.addTemplate(id, label, points, opts, true);
   }
 
   removePersonal(id?: string): void {
     this.templates = this.templates.filter((t) => !t.personal || (id !== undefined && t.id !== id));
   }
 
-  private addTemplate(
-    id: string,
-    label: string,
-    points: readonly Pt[],
-    rotationDeg: number,
-    corners: readonly [number, number] | null,
-    personal: boolean,
-  ): void {
-    const fullRotation = rotationDeg >= 180;
+  private addTemplate(id: string, label: string, points: readonly Pt[], o: TemplateOptions, personal: boolean): void {
+    const fullRotation = o.rotationDeg >= 180;
+    const uniform = o.uniformScale ?? false;
     const pa = principalAxis(resample(points));
     this.templates.push({
       axis: !fullRotation && pa.elongation <= ONE_D_RATIO ? pa.angle : null,
       id,
       label,
-      pts: normalize(points, fullRotation),
+      pts: normalize(points, fullRotation, uniform),
       fullRotation,
-      range: fullRotation ? FULL_SEARCH : Math.max(0, rotationDeg) * DEG + ROTATION_SLACK,
-      tolerance: fullRotation ? FULL_SEARCH : Math.max(0, rotationDeg) * DEG,
-      corners,
+      uniform,
+      range: fullRotation ? FULL_SEARCH : Math.max(0, o.rotationDeg) * DEG + ROTATION_SLACK,
+      tolerance: fullRotation ? FULL_SEARCH : Math.max(0, o.rotationDeg) * DEG,
+      corners: o.corners ?? null,
       personal,
+      power: o.power ?? false,
+      maxGap: o.maxGap ?? null,
     });
   }
 
@@ -382,14 +408,21 @@ export class Recognizer {
     if (points.length < 2 || pathLength(points) === 0 || this.templates.length === 0) {
       return { accepted: false, top: null, runnerUp: null, ms: performance.now() - t0 };
     }
-    let aligned: Pt[] | null = null;
-    let unaligned: Pt[] | null = null;
+    // The stroke is normalised at most once per (rotation alignment, uniform scaling) mode.
+    const normalised = new Map<string, Pt[]>();
+    const candidate = (align: boolean, uniform: boolean): Pt[] => {
+      const key = `${+align}${+uniform}`;
+      let c = normalised.get(key);
+      if (!c) normalised.set(key, (c = normalize(points, align, uniform)));
+      return c;
+    };
     const resampled = resample(points);
     const corners = countCorners(resampled);
     const axis = principalAxis(resampled);
+    const gap = endGap(resampled);
     const bestById = new Map<string, Match>();
     for (const t of this.templates) {
-      const cand = t.fullRotation ? (aligned ??= normalize(points, true)) : (unaligned ??= normalize(points, false));
+      const cand = candidate(t.fullRotation, t.uniform);
       let score = 1 - bestCost(cand, t.pts, t.range, t.tolerance);
       if (t.axis !== null && axis.elongation <= ONE_D_RATIO) {
         // $1 distance barely changes for a line rotated 20° past tolerance; the axis does.
@@ -400,6 +433,8 @@ export class Recognizer {
         score -= off * this.params.cornerPenalty;
       }
       if (t.personal) score -= this.params.personalMargin;
+      if (t.power) score -= this.params.powerMargin;
+      if (t.maxGap !== null && gap > t.maxGap) score -= this.params.cornerPenalty;
       score = Math.max(0, score);
       const prev = bestById.get(t.id);
       if (!prev || score > prev.score) bestById.set(t.id, { id: t.id, label: t.label, score, personal: t.personal });
@@ -413,4 +448,23 @@ export class Recognizer {
       ms: performance.now() - t0,
     };
   }
+}
+
+/** Distance between a stroke's two ends, as a fraction of its larger bounding-box side. */
+export function endGap(pts: readonly Pt[]): number {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  const size = Math.max(maxX - minX, maxY - minY);
+  if (!(size > 0) || pts.length < 2) return 0;
+  const a = pts[0];
+  const b = pts[pts.length - 1];
+  return Math.hypot(b.x - a.x, b.y - a.y) / size;
 }

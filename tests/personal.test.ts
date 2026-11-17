@@ -10,7 +10,9 @@ import { between, distort, rng, variantOf, type Rng } from './helpers/synth';
 const P = (a: number[][]): Pt[] => a.map(([x, y]) => ({ x, y }));
 const plain = (r: Rng, samples = 60) => ({ size: between(r, 150, 400), rotateDeg: between(r, -8, 8), noise: 0.01, wobble: 0.02, aspect: 1, roundCorners: 1, speedVariation: 0.3, samples });
 const standard = () => new Recognizer(SHAPES, { ...DEFAULT_RECOGNIZER });
-const roundedSquare = (r: Rng) => distort(P([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]), plain(r), r);
+/** A player whose hearts come out as one-stroke stars: nothing in the standard vocabulary claims those. */
+const STAR = Array.from({ length: 6 }, (_, k) => { const a = -Math.PI / 2 + (k * 4 * Math.PI) / 5; return [Math.cos(a), Math.sin(a)]; });
+const star = (r: Rng) => distort(P(STAR), plain(r), r);
 
 describe('calibration sample checks', () => {
   it('refuses strokes too small to carry a shape', () => {
@@ -26,13 +28,13 @@ describe('calibration sample checks', () => {
   });
 
   it('welcomes a quirky stroke the standard set merely rejects', () => {
-    expect(checkSample(standard(), 'circle', roundedSquare(rng(2))).ok).toBe(true);
+    expect(checkSample(standard(), 'heart', star(rng(2))).ok).toBe(true);
   });
 });
 
 describe('personal set storage', () => {
   it('round-trips through JSON and drops junk', () => {
-    const set: PersonalSet = { circle: [compactSample(roundedSquare(rng(3)))] };
+    const set: PersonalSet = { heart: [compactSample(star(rng(3)))] };
     expect(parsePersonal(JSON.parse(JSON.stringify(set)))).toEqual(set);
     const junk = {
       circle: [[{ x: 1, y: 'a' }, { x: 1, y: 2 }, { x: 3, y: 4 }, { x: 5, y: 6 }]],
@@ -48,26 +50,26 @@ describe('personal set storage', () => {
 });
 
 describe('personal templates', () => {
-  it("teach the player's own style: rounded-square 'circles' go from rejected to recognised", () => {
+  it("teach the player's own style: star-shaped 'hearts' go from rejected to recognised", () => {
     const base = standard();
     const r = rng(10);
-    const tests = Array.from({ length: 60 }, () => roundedSquare(r));
+    const tests = Array.from({ length: 60 }, () => star(r));
     expect(tests.filter((s) => base.recognize(s).accepted).length).toBe(0);
 
     const mine = standard();
     const cal = rng(20);
-    applyPersonal(mine, { circle: Array.from({ length: 3 }, () => compactSample(roundedSquare(cal))) });
+    applyPersonal(mine, { heart: Array.from({ length: 3 }, () => compactSample(star(cal))) });
     const hits = tests.filter((s) => {
       const res = mine.recognize(s);
-      return res.accepted && res.top?.id === 'circle';
+      return res.accepted && res.top?.id === 'heart';
     }).length;
     expect(hits / tests.length).toBeGreaterThanOrEqual(0.9);
   });
 
-  it("don't steal other shapes: triangles stay triangles after calibrating a quirky circle", () => {
+  it("don't steal other shapes: triangles stay triangles after calibrating a quirky heart", () => {
     const mine = standard();
     const cal = rng(20);
-    applyPersonal(mine, { circle: Array.from({ length: 3 }, () => compactSample(roundedSquare(cal))) });
+    applyPersonal(mine, { heart: Array.from({ length: 3 }, () => compactSample(star(cal))) });
     const r = rng(30);
     const tri = SHAPES.find((s) => s.id === 'triangle')!;
     let ok = 0;

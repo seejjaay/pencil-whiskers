@@ -8,8 +8,12 @@ import type { Prefs } from '../prefs';
 import { SHAPES } from '../recognizer/shapes';
 import { CREAM, FONT, INK, PINK, PINK_DARK, circle, heartPath, outlined, phase, roundRect } from './art/draw';
 import { drawMochi, type Mood } from './art/mochi';
-import { drawThreat } from './art/threats';
+import { artFor } from './art/registry';
 import { Particles, Shake } from './particles';
+import { POWERS, POWER_RULES, powerDef, type PowerKind } from '../game/powerups';
+import { drawPowerIcon, drawPowerItem } from './art/powerups';
+
+const MULTI_WORDS = ['', '', 'double pounce!', 'triple pounce!', 'mega pounce!'];
 
 export interface FieldGeom {
   w: number;
@@ -130,7 +134,9 @@ export class GameView {
   private moodStart = 0;
   private moodMs = 0;
   private lean = 0;
-  private banner: { title: string; sub: string; shapes: readonly string[]; until: number } | null = null;
+  private banner: { title: string; sub: string; label?: string; shapes: readonly string[]; until: number } | null = null;
+  private inventoryFlashUntil = 0;
+  private eraseFlashAt = -1e9;
   private heartFlashUntil = 0;
   private purrFlashUntil = 0;
   private spawnTimes = new Map<number, number>();
@@ -216,6 +222,45 @@ export class GameView {
         case 'gameOver':
           this.setMood('startled', now, 60_000, geom.mochiX, geom);
           break;
+        case 'multiHit':
+          this.pop(MULTI_WORDS[Math.min(e.count, MULTI_WORDS.length - 1)], geom.w / 2, geom.h * 0.5, now, PINK_DARK, 30);
+          this.kick(3);
+          break;
+        case 'powerSpawn':
+          this.spawnTimes.set(e.item.id, now);
+          break;
+        case 'powerCollect': {
+          const p = toScreen(geom, e.item.x, e.item.y);
+          const def = powerDef(e.item.kind);
+          this.particles.burst('star', p.x, p.y, 12, { speed: [100, 260], size: [6, 10], colors: ['#ffd65c', '#bfe3ff', '#d8f3c8'] });
+          this.pop(`saved: ${def.label}!`, p.x, p.y - 40, now, INK, 22);
+          this.inventoryFlashUntil = now + 900;
+          if (e.first) this.banner = { title: `Saved: ${def.label}!`, sub: '', label: 'draw to use', shapes: [def.useShape], until: now + 3200 };
+          this.spawnTimes.delete(e.item.id);
+          break;
+        }
+        case 'powerFull': {
+          const p = toScreen(geom, e.item.x, e.item.y);
+          this.pop(`full! +${e.bonus}`, p.x, p.y - 30, now, INK, 20);
+          this.spawnTimes.delete(e.item.id);
+          break;
+        }
+        case 'powerMissed':
+          this.spawnTimes.delete(e.item.id);
+          break;
+        case 'powerUse':
+          this.pop(`${powerDef(e.kind).label}!`, geom.w / 2, geom.h * 0.45, now, PINK_DARK, 32);
+          if (e.kind === 'erase') {
+            this.eraseFlashAt = now;
+            this.kick(8);
+          }
+          break;
+        case 'powerEmpty':
+          this.pop(`no ${powerDef(e.kind).label} saved`, geom.mochiX + 110, geom.mochiY - 80, now, '#7d6f75', 18);
+          break;
+        case 'powerEnd':
+          this.pop(e.kind === 'barrier' ? 'barrier down' : 'time back to normal', geom.w / 2, geom.h * 0.55, now, '#7d6f75', 18);
+          break;
       }
     }
   }
@@ -232,10 +277,13 @@ export class GameView {
     if (this.mood !== 'sleep' && now - this.moodStart > this.moodMs) this.mood = 'sleep';
 
     const off = this.shake.offset(now);
+    if (game.slowActive) this.drawSlow(ctx, game, now, geom);
     ctx.save();
     if (this.prefs.shake) ctx.translate(off.x, off.y);
+    this.drawItems(ctx, game, now, geom);
     this.drawThreats(ctx, game, now, geom);
     this.drawGhosts(ctx, now, geom);
+    if (game.barrierActive) this.drawBarrier(ctx, game, now, geom);
     drawMochi(ctx, {
       x: geom.mochiX,
       y: geom.mochiY,
@@ -247,9 +295,101 @@ export class GameView {
     this.particles.draw(ctx);
     ctx.restore();
 
-    if (game.phase !== 'title') this.drawHud(ctx, game, now, geom);
+    if (now - this.eraseFlashAt < 400) {
+      ctx.save();
+      ctx.globalAlpha = 0.5 * (1 - (now - this.eraseFlashAt) / 400);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, geom.w, geom.h);
+      ctx.restore();
+    }
+    if (game.phase !== 'title') {
+      this.drawHud(ctx, game, now, geom);
+      this.drawInventory(ctx, game, now);
+    }
     this.drawBanner(ctx, now, geom);
     this.drawPops(ctx, now);
+  }
+
+  private drawItems(ctx: CanvasRenderingContext2D, game: Game, now: number, geom: FieldGeom): void {
+    for (const it of game.items) {
+      const p = toScreen(geom, it.x, it.y);
+      const born = this.spawnTimes.get(it.id) ?? now - 1000;
+      const grow = Math.min(1, (now - born) / 280);
+      ctx.save();
+      ctx.globalAlpha = grow;
+      ctx.translate(p.x, p.y + Math.sin(now / 400 + it.id) * 4);
+      ctx.scale(0.4 + 0.6 * easeOutBack(grow), 0.4 + 0.6 * easeOutBack(grow));
+      drawPowerItem(ctx, it.kind, now, it.id);
+      ctx.restore();
+      ctx.save();
+      ctx.globalAlpha = grow;
+      bubble(ctx, { symbols: [it.symbol], cleared: 0 } as unknown as Threat, p.x, p.y - 82, now, 0);
+      ctx.restore();
+    }
+  }
+
+  /** The barrier: a cushiony arch across the field at its line, fading in its last seconds. */
+  private drawBarrier(ctx: CanvasRenderingContext2D, game: Game, now: number, geom: FieldGeom): void {
+    const left = game.barrierUntil - game.time;
+    const y = toScreen(geom, 0, POWER_RULES.barrierY).y + 34;
+    ctx.save();
+    ctx.globalAlpha = left < 1500 ? 0.4 + 0.6 * Math.abs(Math.sin(now / 90)) : 1;
+    ctx.beginPath();
+    ctx.moveTo(geom.left - 40, y + 18);
+    ctx.quadraticCurveTo(geom.w / 2, y - 26, geom.right + 40, y + 18);
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 16;
+    ctx.strokeStyle = INK;
+    ctx.stroke();
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = '#bfeab0';
+    ctx.stroke();
+    ctx.setLineDash([10, 12]);
+    ctx.lineDashOffset = -now / 30;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Slow time: a cool wash over the field and a draining timer under the score. */
+  private drawSlow(ctx: CanvasRenderingContext2D, game: Game, now: number, geom: FieldGeom): void {
+    const left = Math.max(0, game.slowUntil - game.time) / powerDef('slow').durationMs;
+    ctx.save();
+    ctx.fillStyle = `rgba(160, 205, 255, ${0.16 + 0.04 * Math.sin(now / 300)})`;
+    ctx.fillRect(0, 0, geom.w, geom.h);
+    roundRect(ctx, geom.w / 2, 98, 160, 12, 6);
+    outlined(ctx, 'rgba(255,255,255,0.8)', 3);
+    ctx.beginPath();
+    ctx.roundRect(geom.w / 2 - 77, 94, 154 * left, 8, 4);
+    ctx.fillStyle = '#8fc4ff';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Saved power-ups, top left: icon, how many, and the shape that uses it. */
+  private drawInventory(ctx: CanvasRenderingContext2D, game: Game, now: number): void {
+    const counts = new Map<PowerKind, number>();
+    for (const k of game.inventory) counts.set(k, (counts.get(k) ?? 0) + 1);
+    let x = 22;
+    const y = 22;
+    const flash = now < this.inventoryFlashUntil;
+    for (const def of POWERS) {
+      const n = counts.get(def.kind) ?? 0;
+      ctx.save();
+      ctx.globalAlpha = n ? 1 : 0.35;
+      ctx.beginPath();
+      ctx.roundRect(x, y, 96, 52, 16);
+      outlined(ctx, n && flash ? '#fff3c4' : 'rgba(255,246,238,0.92)', 3);
+      drawPowerIcon(ctx, def.kind, x + 24, y + 26, 26);
+      drawGlyph(ctx, def.useShape, x + 66, y + 22, 26, PINK_DARK, 3);
+      ctx.font = `800 13px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = INK;
+      ctx.fillText(n ? `x${n}` : 'draw', x + 66, y + 46);
+      ctx.restore();
+      x += 104;
+    }
   }
 
   private kick(px: number): void {
@@ -282,18 +422,19 @@ export class GameView {
       const grow = Math.min(1, (now - born) / 280);
       const hitAt = this.hitTimes.get(t.id);
       const flash = hitAt !== undefined ? Math.max(0, 1 - (now - hitAt) / 220) : 0;
-      const scale = (t.boss ? bossScale(geom) : 1) * (0.4 + 0.6 * easeOutBack(grow)) * (1 + 0.12 * flash);
+      const art = artFor(t.kind);
+      const scale = (art.size === 'big' ? bossScale(geom) : 1) * (0.4 + 0.6 * easeOutBack(grow)) * (1 + 0.12 * flash);
       const bob = Math.sin(now / 320 + phase(t.id) * 6) * 3;
       ctx.save();
       ctx.globalAlpha = grow;
       ctx.translate(p.x, p.y + bob);
       ctx.save();
       ctx.scale(scale, scale);
-      drawThreat(ctx, t.kind, now, t.id);
+      art.draw(ctx, now, t.id);
       ctx.restore();
       // The boss's long sequence must stay readable: its bubble rides above the shower arch
       // but never higher than just under the score.
-      const by = t.boss ? Math.max(BOSS_BUBBLE_MIN_Y - (p.y + bob), -84 * scale - 44) : -64 * scale - 40;
+      const by = t.boss ? Math.max(BOSS_BUBBLE_MIN_Y - (p.y + bob), -art.bubbleRise * scale - 44) : -art.bubbleRise * scale - 40;
       bubble(ctx, t, 0, by, now, flash);
       ctx.restore();
     }
@@ -307,10 +448,11 @@ export class GameView {
       ctx.save();
       ctx.globalAlpha = 1 - k;
       ctx.translate(p.x, p.y - 30 * k);
-      const s = (g.threat.boss ? bossScale(geom) : 1) * (1 - 0.7 * k);
+      const ghostArt = artFor(g.threat.kind);
+      const s = (ghostArt.size === 'big' ? bossScale(geom) : 1) * (1 - 0.7 * k);
       ctx.scale(s, s);
       ctx.rotate(k * 0.8);
-      drawThreat(ctx, g.threat.kind, now, g.threat.id);
+      ghostArt.draw(ctx, now, g.threat.id);
       ctx.restore();
     }
   }
@@ -393,7 +535,7 @@ export class GameView {
       ctx.font = `700 20px ${FONT}`;
       ctx.textAlign = 'left';
       ctx.fillStyle = INK;
-      ctx.fillText('new shape', -w / 2 + 24, 63);
+      ctx.fillText(b.label ?? 'new shape', -w / 2 + 24, 63);
       b.shapes.forEach((id, i) => drawGlyph(ctx, id, -w / 2 + 160 + i * 60, 56, 34, PINK_DARK, 5));
     }
     ctx.restore();

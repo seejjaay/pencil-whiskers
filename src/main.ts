@@ -328,7 +328,7 @@ function frame(now: number): void {
         startGame(now);
       } else if (game.phase === 'playing' && !paused) {
         const evs = game.submit(res.top.id);
-        good = evs.some((e) => e.type === 'hit' || e.type === 'defeat');
+        good = evs.some((e) => e.type === 'hit' || e.type === 'defeat' || e.type.startsWith('powerC') || e.type === 'powerFull' || e.type === 'powerUse');
         gameEvents.push(...evs);
       }
     } else if (kept && game.phase === 'playing' && !paused) {
@@ -438,7 +438,7 @@ function hudLines(): string[] {
   lines.push(
     `game     ${game.phase} wave ${game.wave}  spawned ${game.spawned}/${game.spec.threatCount}  on screen ${game.threats.length}  hearts ${game.hearts}  combo ${game.combo} x${game.multiplier}  seed ${game.seed}`,
   );
-  lines.push(`[D] hud  [M] camera/mouse  [T] tuning  [P] pause  [1-${INTENT_KEYS.length}] tag  [0] untag  [L] save log  · personal templates ${personalCount}`);
+  lines.push(`[D] hud  [M] camera/mouse  [T] tuning  [P] pause  [ ] tag shape  [0] untag  [L] save log  · personal templates ${personalCount}`);
   return lines;
 }
 
@@ -471,15 +471,15 @@ window.addEventListener('keydown', (e) => {
   else if (k === 't') tuningPanel.toggle();
   else if (k === 'l') saveStrokeLog();
   else if (k === 'p' || k === 'escape') setPaused(!paused);
-  else if (/^[0-9]$/.test(k)) {
-    const n = Number(k);
-    if (n === 0) {
-      strokeLog.setIntent(null, e.timeStamp);
-      toast('Tagging off');
-    } else if (n <= INTENT_KEYS.length) {
-      strokeLog.setIntent(INTENT_KEYS[n - 1], e.timeStamp);
-      toast(`Tagging next strokes as: ${intentLabel(INTENT_KEYS[n - 1])}`);
-    }
+  else if (k === '0') {
+    strokeLog.setIntent(null, e.timeStamp);
+    toast('Tagging off');
+  } else if (k === ']' || k === '[') {
+    // 12 shapes + "not a shape" no longer fit on the number keys: cycle through them.
+    const i = strokeLog.intent ? INTENT_KEYS.indexOf(strokeLog.intent) : -1;
+    const next = INTENT_KEYS[(i + (k === ']' ? 1 : INTENT_KEYS.length - 1) + INTENT_KEYS.length) % INTENT_KEYS.length];
+    strokeLog.setIntent(next, e.timeStamp);
+    toast(`Tagging next strokes as: ${intentLabel(next)}`);
   }
 });
 

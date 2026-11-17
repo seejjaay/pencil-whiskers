@@ -206,6 +206,22 @@ export function playEventSounds(sfx: Sfx, events: readonly GameEvent[], combo: n
       case 'gameOver':
         sfx.meow('sad');
         break;
+      case 'multiHit':
+        sfx.plink(7);
+        break;
+      case 'powerCollect':
+        sfx.chime(false);
+        break;
+      case 'powerFull':
+        sfx.plink(5);
+        break;
+      case 'powerUse':
+        if (e.kind === 'erase') sfx.pop();
+        sfx.purr();
+        break;
+      case 'powerEmpty':
+        sfx.bonk();
+        break;
     }
   }
 }

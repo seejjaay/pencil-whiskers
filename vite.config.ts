@@ -1,6 +1,6 @@
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
-import { serviceWorkerSource } from './src/sw/template';
+import { serviceWorkerSource } from './src/sw/template.ts';
 
 /** Short stable hash (FNV-1a) so the config needs no Node type definitions. */
 function fnv1a(s: string): string {
