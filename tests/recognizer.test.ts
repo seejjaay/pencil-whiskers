@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Recognizer, countCorners, expandVariants, resample, type Pt, type Recognition } from '../src/recognizer/recognizer';
+import { DEFAULT_RECOGNIZER, Recognizer, countCorners, expandVariants, resample, type Pt, type Recognition } from '../src/recognizer/recognizer';
 import { SHAPES, type ShapeDef } from '../src/recognizer/shapes';
 import { makeCoverMap } from '../src/view/coverMap';
 import { between, distort, rng, sloppyCircle, typical, variantOf, type Distortion, type Rng } from './helpers/synth';
@@ -221,7 +221,7 @@ describe('recognizer: data-driven vocabulary', () => {
   });
 
   it('reads the threshold live from params', () => {
-    const r2 = new Recognizer(SHAPES, { minScore: 0.78, cornerPenalty: 0.12 });
+    const r2 = new Recognizer(SHAPES, { ...DEFAULT_RECOGNIZER, minScore: 0.78 });
     const line = P([[0, 0], [100, 0]]);
     expect(r2.recognize(line).accepted).toBe(true);
     r2.params.minScore = 1.01;

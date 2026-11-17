@@ -12,6 +12,11 @@ import { drawRecognitionLabel } from './view/labels';
 import { Game } from './game/game';
 import { GameView, fieldGeom } from './view/gameView';
 import { mountPanel } from './ui/panel';
+import { mountSettings } from './ui/settingsPanel';
+import { mountCalibration } from './ui/calibration';
+import { applyPersonal, countSamples, loadPersonal, savePersonal } from './recognizer/personal';
+import { loadPrefs } from './prefs';
+import { Sfx, playEventSounds } from './audio/sfx';
 import type { Delegate } from './tracking/protocol';
 import { TrackerClient, emptyTrackerStats } from './tracking/trackerClient';
 import { makeCoverMap, type CoverMap } from './view/coverMap';
@@ -35,6 +40,21 @@ const modeBtn = document.querySelector<HTMLButtonElement>('#mode')!;
 const tuningEl = document.querySelector<HTMLDivElement>('#tuning')!;
 const toastEl = document.querySelector<HTMLDivElement>('#toast')!;
 const panelEl = document.querySelector<HTMLDivElement>('#panel')!;
+const settingsEl = document.querySelector<HTMLDivElement>('#settings')!;
+const settingsBtn = document.querySelector<HTMLButtonElement>('#settings-btn')!;
+const calibEl = document.querySelector<HTMLDivElement>('#calib')!;
+
+// ---- player prefs (sound, shake, tint) and sound effects
+const prefs = loadPrefs();
+const sfx = new Sfx();
+function applyPrefsNow(): void {
+  sfx.enabled = prefs.sound;
+  document.documentElement.style.setProperty('--tint', String(prefs.tint));
+}
+applyPrefsNow();
+// Browsers keep audio locked until the first click or key press on the page.
+window.addEventListener('pointerdown', () => sfx.unlock(), { capture: true });
+window.addEventListener('keydown', () => sfx.unlock(), { capture: true });
 const ctx = canvas.getContext('2d', { alpha: true })!;
 
 // The debug HUD covers part of the playfield, so it starts hidden unless asked for (D toggles).
@@ -123,6 +143,11 @@ let camera: CameraPointerSource | null = null;
 let active: PointerSource = mouse;
 const recorder = new StrokeRecorder(tuning.recorder);
 const recognizer = new Recognizer(SHAPES, tuning.recognizer);
+const savedPersonal = loadPersonal();
+applyPersonal(recognizer, savedPersonal);
+let personalCount = countSamples(savedPersonal);
+/** Standard templates only: judges calibration samples without being biased by old ones. */
+const standardRecognizer = new Recognizer(SHAPES, tuning.recognizer);
 let lastRecognition: Recognition | null = null;
 const strokeLog = new StrokeLog();
 // Warm up: the first recognition pays for JIT compilation (~15 ms measured). Pay it at boot,
@@ -160,9 +185,48 @@ const shown: Shown[] = [];
 
 // ---- the game
 const FIXED_SEED = params.get('seed');
+/** Debug / practice: ?wave=5 starts at wave 5 (the first boss). */
+const FIRST_WAVE = Math.max(1, Number(params.get('wave')) || 1);
 const newSeed = (): number => (FIXED_SEED !== null ? Number(FIXED_SEED) >>> 0 : crypto.getRandomValues(new Uint32Array(1))[0]);
 const game = new Game(newSeed());
-const gameView = new GameView();
+const gameView = new GameView(prefs);
+
+// ---- settings and calibration
+const settings = mountSettings(settingsEl, prefs, {
+  onChange: applyPrefsNow,
+  onCalibrate: openCalibration,
+  onClose: () => settingsBtn.focus({ preventScroll: true }),
+});
+const calibration = mountCalibration(calibEl, standardRecognizer, {
+  onSave: (set) => {
+    savePersonal(set);
+    applyPersonal(recognizer, set);
+    personalCount = countSamples(set);
+  },
+  onClose: restoreCardAfterOverlay,
+  onSample: (ok) => (ok ? sfx.plink(4) : sfx.bonk()),
+});
+
+function openSettings(): void {
+  if (game.phase === 'playing' || game.phase === 'intro') setPaused(true);
+  settings.open();
+}
+
+function openCalibration(): void {
+  settings.close();
+  if (game.phase === 'playing' || game.phase === 'intro') setPaused(true);
+  panel.hide();
+  calibration.open(loadPersonal());
+}
+
+/** After calibration, bring back whichever card belongs on screen. */
+function restoreCardAfterOverlay(): void {
+  if (game.phase === 'title') showTitle();
+  else if (game.phase === 'gameover') panel.showGameOver({ score: game.score, wave: game.wave, bestCombo: game.bestCombo });
+  else if (paused) panel.showPaused();
+}
+
+settingsBtn.addEventListener('click', openSettings);
 let paused = false;
 let gameOverAt = 0;
 let panelShownAt = 0;
@@ -172,7 +236,7 @@ function startGame(now: number): void {
   paused = false;
   shown.length = 0;
   gameView.reset();
-  gameView.handle(game.start(newSeed()), now, fieldGeom(viewW, viewH));
+  gameView.handle(game.start(newSeed(), FIRST_WAVE), now, fieldGeom(viewW, viewH));
   panel.hide();
 }
 
@@ -255,7 +319,11 @@ function frame(now: number): void {
     const stroke = read?.stroke ?? ev.stroke;
     strokeLog.commit(active.kind, ev.end, !kept, res);
     let good = kept && !!res?.accepted;
-    if (res?.accepted && res.top) {
+    if (calibration.active) {
+      // Teaching Mochi: every finished stroke is a calibration sample, never a game move.
+      if (kept) calibration.offer(ev.stroke.points);
+      good = kept;
+    } else if (res?.accepted && res.top) {
       if ((game.phase === 'title' || game.phase === 'gameover') && res.top.id === 'circle' && canStartByDrawing(now)) {
         startGame(now);
       } else if (game.phase === 'playing' && !paused) {
@@ -282,6 +350,7 @@ function frame(now: number): void {
   updateDisplayCursor(active.cursor(), dt);
   const geom = fieldGeom(viewW, viewH);
   gameView.handle(gameEvents, now, geom);
+  playEventSounds(sfx, gameEvents, game.combo);
   const over = gameEvents.find((e) => e.type === 'gameOver');
   if (over) gameOverAt = now;
   if (game.phase === 'gameover' && !panel.visible && now - gameOverAt > 1100) {
@@ -369,7 +438,7 @@ function hudLines(): string[] {
   lines.push(
     `game     ${game.phase} wave ${game.wave}  spawned ${game.spawned}/${game.spec.threatCount}  on screen ${game.threats.length}  hearts ${game.hearts}  combo ${game.combo} x${game.multiplier}  seed ${game.seed}`,
   );
-  lines.push(`[D] hud  [M] camera/mouse  [T] tuning  [P] pause  [1-${INTENT_KEYS.length}] tag  [0] untag  [L] save log`);
+  lines.push(`[D] hud  [M] camera/mouse  [T] tuning  [P] pause  [1-${INTENT_KEYS.length}] tag  [0] untag  [L] save log  · personal templates ${personalCount}`);
   return lines;
 }
 
@@ -395,6 +464,7 @@ if (BENCH) {
 
 window.addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLInputElement) return;
+  if (settings.visible || calibration.active) return; // dialogs handle their own keys
   const k = e.key.toLowerCase();
   if (k === 'd') hud.hidden = !hud.hidden;
   else if (k === 'm') setMode(active.kind === 'camera' ? 'mouse' : 'camera');

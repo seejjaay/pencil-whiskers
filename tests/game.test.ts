@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Game, RULES, multiplierFor, type GameEvent, type Threat } from '../src/game/game';
 import { createRng } from '../src/game/rng';
-import { SHAPE_UNLOCKS, THREAT_KINDS, waveSpec } from '../src/game/waves';
+import { BOSS_EVERY, SHAPE_UNLOCKS, THREAT_KINDS, isBossWave, waveSpec } from '../src/game/waves';
 import { SHAPES } from '../src/recognizer/shapes';
 import { playBot, type BotSkill } from './helpers/bot';
 
@@ -17,7 +17,7 @@ function playing(seed = 1): Game {
 
 let nextTestId = 1000;
 function threat(over: Partial<Threat> & { symbols: string[] }): Threat {
-  return { id: nextTestId++, kind: 'vacuum', x: 0.5, y: 0.2, speed: 0.1, cleared: 0, spawnedAt: 0, ...over };
+  return { id: nextTestId++, kind: 'vacuum', x: 0.5, y: 0.2, speed: 0.1, cleared: 0, spawnedAt: 0, boss: false, ...over };
 }
 
 const types = (evs: GameEvent[]) => evs.map((e) => e.type);
@@ -48,10 +48,11 @@ describe('seeded rng', () => {
 });
 
 describe('wave table', () => {
-  it('gets harder every wave and never easier', () => {
-    for (let n = 1; n < 25; n++) {
-      const a = waveSpec(n);
-      const b = waveSpec(n + 1);
+  it('regular waves get harder every time and never easier (boss waves are their own set piece)', () => {
+    const regular = Array.from({ length: 25 }, (_, i) => i + 1).filter((n) => !isBossWave(n));
+    for (let i = 0; i + 1 < regular.length; i++) {
+      const a = waveSpec(regular[i]);
+      const b = waveSpec(regular[i + 1]);
       expect(b.speed).toBeGreaterThanOrEqual(a.speed);
       expect(b.spawnEveryMs).toBeLessThanOrEqual(a.spawnEveryMs);
       expect(b.threatCount).toBeGreaterThanOrEqual(a.threatCount);
@@ -199,6 +200,80 @@ describe('game flow', () => {
     g.start(77);
     expect(g).toMatchObject({ phase: 'intro', wave: 1, hearts: RULES.hearts, score: 0, combo: 0, seed: 77 });
     expect(g.threats).toHaveLength(0);
+  });
+});
+
+describe('boss waves ("Bath Time")', () => {
+  /** Plays straight to the given wave by clearing waves instantly. */
+  function atWave(n: number, seed = 3): Game {
+    const g = new Game(seed);
+    g.start();
+    while (g.wave < n) {
+      g.step(RULES.introMs);
+      g.spawned = g.spec.threatCount;
+      g.threats = [];
+      g.step(50);
+    }
+    return g;
+  }
+
+  it('every 5th wave is a boss wave, announced as one', () => {
+    expect([4, 5, 6, 10].map(isBossWave)).toEqual([false, true, false, true]);
+    const g = new Game(1);
+    g.start();
+    let sawBossBanner = false;
+    while (g.wave < BOSS_EVERY) {
+      g.step(RULES.introMs);
+      g.spawned = g.spec.threatCount;
+      g.threats = [];
+      for (const e of g.step(50)) if (e.type === 'waveStart' && e.wave === BOSS_EVERY) sawBossBanner = e.boss;
+    }
+    expect(sawBossBanner).toBe(true);
+  });
+
+  it('the boss comes first, centre stage, with a long sequence that never repeats a shape twice in a row', () => {
+    const g = atWave(5);
+    const evs = g.step(RULES.introMs + 100);
+    const spawn = evs.find((e) => e.type === 'spawn');
+    expect(spawn).toMatchObject({ threat: { kind: 'bathTime', boss: true, x: 0.5 } });
+    const boss = g.threats.find((t) => t.boss)!;
+    expect(boss.symbols.length).toBe(waveSpec(5).boss!.symbols);
+    for (let i = 1; i < boss.symbols.length; i++) expect(boss.symbols[i]).not.toBe(boss.symbols[i - 1]);
+    for (const s of boss.symbols) expect(waveSpec(5).shapes).toContain(s);
+  });
+
+  it('escorts follow the boss, as regular threats', () => {
+    const g = atWave(5);
+    g.step(RULES.introMs + 100);
+    for (let i = 0; i < 300; i++) g.step(50);
+    const regular = g.threats.filter((t) => !t.boss);
+    expect(regular.length).toBeGreaterThan(0);
+    for (const t of regular) expect(t.kind).not.toBe('bathTime');
+  });
+
+  it('a run can start at a later wave (practice / debug), boss included', () => {
+    const g = new Game(4);
+    expect(g.start(4, 5)).toEqual([{ type: 'waveStart', wave: 5, newShapes: [], boss: true }]);
+    g.step(RULES.introMs + 100);
+    expect(g.threats[0]).toMatchObject({ boss: true });
+  });
+
+  it('the boss reaching Mochi costs two nap hearts', () => {
+    const g = playing();
+    g.threats = [threat({ symbols: ['hline', 'vline'], y: 0.99, speed: 0.2, boss: true, kind: 'bathTime' })];
+    const evs = g.step(200);
+    expect(evs).toContainEqual({ type: 'heartLost', hearts: RULES.hearts - RULES.bossHeartCost, lost: RULES.bossHeartCost });
+  });
+
+  it('beating the boss pays a doubled defeat bonus; partial hits push it back less', () => {
+    const g = playing();
+    const boss = threat({ symbols: ['hline', 'vline'], y: 0.5, boss: true, kind: 'bathTime' });
+    g.threats = [boss];
+    g.submit('hline');
+    expect(boss.y).toBeCloseTo(0.5 - RULES.bossKnockback);
+    const evs = g.submit('vline');
+    const defeat = evs.find((e) => e.type === 'defeat');
+    expect(defeat).toMatchObject({ points: RULES.symbolPoints + RULES.defeatBonusPerSymbol * 2 * RULES.bossBonusFactor });
   });
 });
 

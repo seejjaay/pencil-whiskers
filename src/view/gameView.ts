@@ -1,18 +1,15 @@
 /**
  * Draws the game: Mochi, threats with symbol bubbles, nap hearts, score, purr meter, wave
- * banners and short reactions. Milestone 3 art is deliberately simple placeholder shapes;
- * the full procedural art, particles and sound arrive in Milestone 4. Pure presentation:
- * it reads the Game and reacts to its events, it never changes the rules.
+ * banners, reactions, particles and shake. Pure presentation: it reads the Game and reacts to
+ * its events; it never changes the rules.
  */
 import { RULES, type Game, type GameEvent, type Threat } from '../game/game';
-import type { ThreatKind } from '../game/waves';
+import type { Prefs } from '../prefs';
 import { SHAPES } from '../recognizer/shapes';
-
-const INK = '#5b3b4a';
-const CREAM = '#fff6ee';
-const PINK = '#f39bbb';
-const PINK_DARK = '#d36f98';
-const FONT = 'ui-rounded, "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif';
+import { CREAM, FONT, INK, PINK, PINK_DARK, circle, heartPath, outlined, phase, roundRect } from './art/draw';
+import { drawMochi, type Mood } from './art/mochi';
+import { drawThreat } from './art/threats';
+import { Particles, Shake } from './particles';
 
 export interface FieldGeom {
   w: number;
@@ -29,9 +26,9 @@ export interface FieldGeom {
 
 export function fieldGeom(w: number, h: number): FieldGeom {
   const margin = Math.min(110, w * 0.09);
-  const mochiY = h - 62;
+  const mochiY = h - 78;
   // top: low enough that a fresh threat's bubble clears the score and wave label above it
-  return { w, h, left: margin, right: w - margin, top: 205, bottom: mochiY - 70, mochiX: w / 2, mochiY };
+  return { w, h, left: margin, right: w - margin, top: Math.round(Math.min(205, Math.max(150, h * 0.3))), bottom: mochiY - 76, mochiX: w / 2, mochiY };
 }
 
 export function toScreen(g: FieldGeom, x: number, y: number): { x: number; y: number } {
@@ -49,7 +46,6 @@ const GLYPHS = new Map(
     const span = Math.max(Math.max(...xs) - minX, Math.max(...ys) - minY) || 1;
     const cx = (Math.max(...xs) + minX) / 2;
     const cy = (Math.max(...ys) + minY) / 2;
-    // normalised to a unit box around (0, 0), aspect kept
     return [def.id, def.points.map(([x, y]) => [(x - cx) / span, (y - cy) / span] as const)] as const;
   }),
 );
@@ -63,201 +59,52 @@ export function drawGlyph(ctx: CanvasRenderingContext2D, id: string, cx: number,
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.beginPath();
-  if (!pts) {
-    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-  } else {
-    pts.forEach(([x, y], i) => (i ? ctx.lineTo(cx + x * size, cy + y * size) : ctx.moveTo(cx + x * size, cy + y * size)));
-  }
+  if (!pts) ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+  else pts.forEach(([x, y], i) => (i ? ctx.lineTo(cx + x * size, cy + y * size) : ctx.moveTo(cx + x * size, cy + y * size)));
   ctx.stroke();
   ctx.restore();
-}
-
-// ---------- small drawing helpers
-
-function outlined(ctx: CanvasRenderingContext2D, fill: string, width = 4): void {
-  ctx.fillStyle = fill;
-  ctx.fill();
-  ctx.lineWidth = width;
-  ctx.strokeStyle = INK;
-  ctx.stroke();
-}
-
-function roundRect(ctx: CanvasRenderingContext2D, cx: number, cy: number, w: number, h: number, r: number): void {
-  ctx.beginPath();
-  ctx.roundRect(cx - w / 2, cy - h / 2, w, h, r);
-}
-
-function circle(ctx: CanvasRenderingContext2D, x: number, y: number, r: number): void {
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-}
-
-function heart(ctx: CanvasRenderingContext2D, x: number, y: number, s: number): void {
-  ctx.beginPath();
-  ctx.moveTo(x, y + s * 0.9);
-  ctx.bezierCurveTo(x - s * 1.4, y - s * 0.1, x - s * 0.7, y - s * 1.2, x, y - s * 0.35);
-  ctx.bezierCurveTo(x + s * 0.7, y - s * 1.2, x + s * 1.4, y - s * 0.1, x, y + s * 0.9);
-  ctx.closePath();
-}
-
-/** A grumpy little face: two dots, slanted brows, a frown. */
-function face(ctx: CanvasRenderingContext2D, x: number, y: number): void {
-  ctx.save();
-  ctx.fillStyle = INK;
-  circle(ctx, x - 9, y, 3.2);
-  ctx.fill();
-  circle(ctx, x + 9, y, 3.2);
-  ctx.fill();
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 3;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(x - 14, y - 9);
-  ctx.lineTo(x - 5, y - 6);
-  ctx.moveTo(x + 14, y - 9);
-  ctx.lineTo(x + 5, y - 6);
-  ctx.moveTo(x - 6, y + 11);
-  ctx.quadraticCurveTo(x, y + 6, x + 6, y + 11);
-  ctx.stroke();
-  ctx.restore();
-}
-
-/** Placeholder bodies, one per threat kind. Returns where the face goes. */
-function threatBody(ctx: CanvasRenderingContext2D, kind: ThreatKind, x: number, y: number, now: number): { fx: number; fy: number } {
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  switch (kind) {
-    case 'vacuum': {
-      ctx.beginPath();
-      ctx.moveTo(x + 22, y - 12);
-      ctx.quadraticCurveTo(x + 48, y - 40, x + 30, y - 52);
-      ctx.lineWidth = 6;
-      ctx.strokeStyle = INK;
-      ctx.stroke();
-      roundRect(ctx, x, y, 64, 46, 16);
-      outlined(ctx, '#b9c3d6');
-      for (const dx of [-18, 18]) {
-        circle(ctx, x + dx, y + 25, 7);
-        outlined(ctx, '#7d869b', 3);
-      }
-      return { fx: x, fy: y - 2 };
-    }
-    case 'sprayBottle': {
-      roundRect(ctx, x - 4, y - 32, 30, 14, 5);
-      outlined(ctx, '#e9eef6', 3);
-      ctx.beginPath();
-      ctx.moveTo(x + 10, y - 26);
-      ctx.lineTo(x + 18, y - 12);
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = INK;
-      ctx.stroke();
-      roundRect(ctx, x, y + 6, 44, 58, 14);
-      outlined(ctx, '#9fd3f0');
-      return { fx: x, fy: y + 6 };
-    }
-    case 'cucumber': {
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(-0.22);
-      roundRect(ctx, 0, 0, 84, 36, 18);
-      outlined(ctx, '#8fd18a');
-      ctx.fillStyle = '#5c9e58';
-      for (const [dx, dy] of [[-28, -8], [-10, 9], [22, -9], [34, 6]]) {
-        circle(ctx, dx, dy, 2.5);
-        ctx.fill();
-      }
-      ctx.restore();
-      return { fx: x, fy: y };
-    }
-    case 'bathTub': {
-      for (let i = 0; i < 3; i++) {
-        const bob = Math.sin(now / 400 + i * 2) * 3;
-        circle(ctx, x - 22 + i * 20, y - 30 + bob - (i % 2) * 6, 8 + (i % 2) * 3);
-        outlined(ctx, '#e3f4ff', 3);
-      }
-      roundRect(ctx, x, y + 4, 92, 42, 16);
-      outlined(ctx, '#f7f9fc');
-      for (const dx of [-30, 30]) {
-        roundRect(ctx, x + dx, y + 30, 10, 12, 4);
-        outlined(ctx, '#d5dbe6', 3);
-      }
-      return { fx: x, fy: y + 4 };
-    }
-    case 'thunderCloud': {
-      ctx.beginPath();
-      ctx.moveTo(x + 2, y + 18);
-      ctx.lineTo(x - 8, y + 36);
-      ctx.lineTo(x + 4, y + 34);
-      ctx.lineTo(x - 4, y + 52);
-      ctx.lineTo(x + 16, y + 28);
-      ctx.lineTo(x + 4, y + 30);
-      ctx.closePath();
-      outlined(ctx, '#ffd65c', 3);
-      ctx.beginPath();
-      ctx.arc(x - 24, y + 4, 18, Math.PI * 0.5, Math.PI * 1.5);
-      ctx.arc(x - 4, y - 12, 24, Math.PI, Math.PI * 2);
-      ctx.arc(x + 24, y + 2, 20, Math.PI * 1.5, Math.PI * 0.5);
-      ctx.closePath();
-      outlined(ctx, '#a3a8bb');
-      return { fx: x, fy: y };
-    }
-    case 'doorbell': {
-      const ring = (Math.sin(now / 90) + 1) / 2;
-      ctx.save();
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 3;
-      ctx.globalAlpha = 0.4 + 0.6 * ring;
-      for (const s of [-1, 1]) {
-        ctx.beginPath();
-        ctx.arc(x, y, 38, s > 0 ? -0.5 : Math.PI - 0.5, s > 0 ? 0.5 : Math.PI + 0.5);
-        ctx.stroke();
-      }
-      ctx.restore();
-      circle(ctx, x, y, 28);
-      outlined(ctx, '#ffd77a');
-      return { fx: x, fy: y };
-    }
-  }
 }
 
 /** Thought bubble with the threat's symbols; drawn ones fade, the next one is underlined. */
-function bubble(ctx: CanvasRenderingContext2D, t: Threat, x: number, y: number): void {
+function bubble(ctx: CanvasRenderingContext2D, t: Threat, x: number, y: number, now: number, flash: number): void {
   const n = t.symbols.length;
   const cell = 46;
   const w = 26 + n * cell;
   const h = 56;
-  const by = y - 82;
-  circle(ctx, x - 8, y - 40, 5);
+  const by = y;
+  circle(ctx, x - 6, by + 46, 5);
   outlined(ctx, '#fff', 3);
-  circle(ctx, x - 2, y - 50, 7);
+  circle(ctx, x - 1, by + 35, 7);
   outlined(ctx, '#fff', 3);
   roundRect(ctx, x, by, w, h, 26);
-  outlined(ctx, '#fff');
+  outlined(ctx, flash > 0 ? '#ffe3ee' : '#fff');
   for (let i = 0; i < n; i++) {
     const gx = x - w / 2 + 13 + cell * i + cell / 2;
     const done = i < t.cleared;
     const next = i === t.cleared;
+    const wobble = next ? Math.sin(now / 260 + i) * 1.5 : 0;
     ctx.save();
-    ctx.globalAlpha = done ? 0.22 : next ? 1 : 0.55;
-    drawGlyph(ctx, t.symbols[i], gx, by, 30, INK, next ? 5 : 4);
+    ctx.globalAlpha = done ? 0.2 : next ? 1 : 0.5;
+    drawGlyph(ctx, t.symbols[i], gx, by + wobble, 30, INK, next ? 5 : 4);
     ctx.restore();
     if (next && n > 1) {
-      ctx.save();
-      ctx.strokeStyle = PINK_DARK;
-      ctx.lineWidth = 4;
-      ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(gx - 12, by + 22);
       ctx.lineTo(gx + 12, by + 22);
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = PINK_DARK;
       ctx.stroke();
-      ctx.restore();
     }
   }
 }
 
 // ---------- the view
 
-type Mood = 'sleep' | 'pounce' | 'startled' | 'happy';
+/** The boss is drawn this much lower than its logical position (its arch is tall). */
+const BOSS_DROP = 95;
+/** Screen y the boss's thought bubble may rise to (just under the score and wave label). */
+const BOSS_BUBBLE_MIN_Y = 116;
 
 interface Pop {
   text: string;
@@ -269,12 +116,6 @@ interface Pop {
   size: number;
 }
 
-interface Burst {
-  x: number;
-  y: number;
-  born: number;
-}
-
 interface Ghost {
   threat: Threat;
   born: number;
@@ -282,23 +123,30 @@ interface Ghost {
 
 export class GameView {
   private pops: Pop[] = [];
-  private bursts: Burst[] = [];
   private ghosts: Ghost[] = [];
+  private particles = new Particles();
+  private shake = new Shake();
   private mood: Mood = 'sleep';
-  private moodUntil = 0;
-  private pounceToX = 0;
-  private banner: { title: string; shapes: readonly string[]; until: number } | null = null;
+  private moodStart = 0;
+  private moodMs = 0;
+  private lean = 0;
+  private banner: { title: string; sub: string; shapes: readonly string[]; until: number } | null = null;
   private heartFlashUntil = 0;
   private purrFlashUntil = 0;
   private spawnTimes = new Map<number, number>();
+  private hitTimes = new Map<number, number>();
+  private lastNow = 0;
+
+  constructor(private readonly prefs: Prefs) {}
 
   reset(): void {
     this.pops = [];
-    this.bursts = [];
     this.ghosts = [];
+    this.particles.clear();
     this.mood = 'sleep';
     this.banner = null;
     this.spawnTimes.clear();
+    this.hitTimes.clear();
   }
 
   /** Turns game events into short-lived animations. */
@@ -306,34 +154,48 @@ export class GameView {
     for (const e of events) {
       switch (e.type) {
         case 'waveStart':
-          this.banner = { title: `Wave ${e.wave}`, shapes: e.newShapes, until: now + RULES.introMs };
+          this.banner = e.boss
+            ? { title: 'Bath Time!', sub: 'draw every shape on the tub', shapes: [], until: now + RULES.introMs }
+            : { title: `Wave ${e.wave}`, sub: '', shapes: e.newShapes, until: now + RULES.introMs };
+          if (e.boss) this.kick(6);
           break;
         case 'spawn':
           this.spawnTimes.set(e.threat.id, now);
+          if (e.threat.boss) this.particles.burst('bubble', toScreen(geom, e.threat.x, 0).x, geom.top, 18, { gravity: -60, speed: [40, 160], size: [6, 14], life: [900, 1600], spreadX: 80 });
           break;
         case 'hit': {
-          const p = toScreen(geom, e.threat.x, e.threat.y);
-          this.pop('nya!', p.x, p.y - 30, now, PINK_DARK, 22);
-          this.pop(`+${e.points}`, p.x + 34, p.y - 4, now, INK, 16);
+          const p = this.threatPos(geom, e.threat);
+          this.hitTimes.set(e.threat.id, now);
+          this.particles.burst('star', p.x, p.y, 6, { speed: [90, 200], size: [5, 8] });
+          this.pop('nya!', p.x, p.y - 34, now, PINK_DARK, 22);
+          this.pop(`+${e.points}`, p.x + 40, p.y - 6, now, INK, 16);
+          if (e.threat.boss) this.kick(4);
+          this.setMood('pounce', now, 380, p.x, geom);
           break;
         }
         case 'defeat': {
-          const p = toScreen(geom, e.threat.x, e.threat.y);
+          const p = this.threatPos(geom, e.threat);
           this.ghosts.push({ threat: { ...e.threat }, born: now });
-          this.bursts.push({ x: p.x, y: p.y, born: now });
-          this.pop('pounce!', p.x, p.y - 40, now, PINK_DARK, 26);
-          this.pop(`+${e.points}`, p.x + 40, p.y, now, INK, 18);
-          this.setMood('pounce', now, 450);
-          this.pounceToX = p.x;
+          const bubbly = e.threat.kind === 'bathTub' || e.threat.kind === 'bathTime';
+          const big = e.threat.boss ? 3 : 1;
+          this.particles.burst('star', p.x, p.y, 10 * big, { speed: [120, 320 * big], size: [6, 11] });
+          this.particles.burst('heart', p.x, p.y, 4 * big, { speed: [60, 160], size: [6, 9], colors: [PINK, '#ff8fb5'], up: 0.6 });
+          if (bubbly) this.particles.burst('bubble', p.x, p.y, 12 * big, { gravity: -80, speed: [40, 180], size: [5, 12], life: [700, 1400] });
+          this.pop(e.threat.boss ? 'BATH CANCELLED!' : 'pounce!', p.x, p.y - 44, now, PINK_DARK, e.threat.boss ? 34 : 26);
+          this.pop(`+${e.points}`, p.x + 46, p.y, now, INK, 18);
+          if (e.threat.boss) this.kick(10);
+          this.setMood('pounce', now, 450, p.x, geom);
           this.spawnTimes.delete(e.threat.id);
           break;
         }
         case 'miss':
-          this.pop('nyeh?', geom.mochiX + 90, geom.mochiY - 70, now, '#7d6f75', 22);
+          this.pop('nyeh?', geom.mochiX + 100, geom.mochiY - 80, now, '#7d6f75', 22);
           break;
         case 'escape':
-          this.setMood('startled', now, 900);
-          this.pop('eep!', geom.mochiX - 90, geom.mochiY - 70, now, '#c2455f', 26);
+          this.setMood('startled', now, 900, geom.mochiX, geom);
+          this.pop('eep!', geom.mochiX - 100, geom.mochiY - 80, now, '#c2455f', 26);
+          this.particles.burst('dot', geom.mochiX, geom.mochiY - 40, 14, { colors: ['#d8d2cf', '#b9c3d6'], speed: [100, 260] });
+          this.kick(e.threat.boss ? 12 : 7);
           this.spawnTimes.delete(e.threat.id);
           break;
         case 'heartLost':
@@ -342,15 +204,17 @@ export class GameView {
         case 'combo':
           if (e.combo > 0 && e.combo % RULES.comboPerLevel === 0 && e.multiplier > 1 && e.combo <= RULES.comboPerLevel * (RULES.maxMultiplier - 1)) {
             this.purrFlashUntil = now + 900;
-            this.pop(`purr x${e.multiplier}!`, geom.w - 150, geom.h - 90, now, PINK_DARK, 24);
-            if (this.mood === 'sleep') this.setMood('happy', now, 600);
+            this.pop(`purr x${e.multiplier}!`, geom.w - 150, geom.h - 100, now, PINK_DARK, 24);
+            this.particles.burst('heart', geom.mochiX, geom.mochiY - 50, 8, { up: 0.8, speed: [120, 220], size: [6, 10], colors: [PINK, '#ff8fb5'], gravity: 120 });
+            if (this.mood === 'sleep') this.setMood('happy', now, 700, geom.mochiX, geom);
           }
           break;
         case 'waveClear':
           this.pop(`wave clear! +${e.bonus}`, geom.w / 2, geom.h * 0.42, now, INK, 28);
+          for (let i = 0; i < 5; i++) this.particles.burst('star', geom.w * (0.15 + i * 0.175), geom.top - 40, 5, { speed: [60, 160], gravity: 260, size: [6, 10] });
           break;
         case 'gameOver':
-          this.setMood('startled', now, 60_000);
+          this.setMood('startled', now, 60_000, geom.mochiX, geom);
           break;
       }
     }
@@ -362,229 +226,122 @@ export class GameView {
   }
 
   draw(ctx: CanvasRenderingContext2D, game: Game, now: number, geom: FieldGeom): void {
-    if (this.mood !== 'sleep' && now > this.moodUntil) this.mood = 'sleep';
+    const dt = this.lastNow ? Math.min(100, now - this.lastNow) : 16;
+    this.lastNow = now;
+    this.particles.update(dt);
+    if (this.mood !== 'sleep' && now - this.moodStart > this.moodMs) this.mood = 'sleep';
+
+    const off = this.shake.offset(now);
+    ctx.save();
+    if (this.prefs.shake) ctx.translate(off.x, off.y);
     this.drawThreats(ctx, game, now, geom);
     this.drawGhosts(ctx, now, geom);
-    this.drawMochi(ctx, now, geom, game.phase === 'gameover');
+    drawMochi(ctx, {
+      x: geom.mochiX,
+      y: geom.mochiY,
+      mood: this.mood,
+      t: this.moodMs ? Math.min(1, (now - this.moodStart) / this.moodMs) : 0,
+      now,
+      lean: this.lean,
+    });
+    this.particles.draw(ctx);
+    ctx.restore();
+
     if (game.phase !== 'title') this.drawHud(ctx, game, now, geom);
     this.drawBanner(ctx, now, geom);
-    this.drawBursts(ctx, now);
     this.drawPops(ctx, now);
   }
 
-  private pop(text: string, x: number, y: number, now: number, color: string, size: number): void {
-    this.pops.push({ text, x, y, born: now, life: 900, color, size });
+  private kick(px: number): void {
+    if (this.prefs.shake) this.shake.kick(px);
   }
 
-  private setMood(mood: Mood, now: number, ms: number): void {
+  /** Where a threat is drawn. The boss is drawn lower so its shower arch clears the score. */
+  private threatPos(geom: FieldGeom, t: Threat): { x: number; y: number } {
+    const p = toScreen(geom, t.x, t.y);
+    if (t.boss) p.y += Math.min(BOSS_DROP, (geom.bottom - geom.top) * 0.3);
+    return p;
+  }
+
+  private pop(text: string, x: number, y: number, now: number, color: string, size: number): void {
+    this.pops.push({ text, x, y, born: now, life: 950, color, size });
+  }
+
+  private setMood(mood: Mood, now: number, ms: number, targetX: number, geom: FieldGeom): void {
     this.mood = mood;
-    this.moodUntil = now + ms;
+    this.moodStart = now;
+    this.moodMs = ms;
+    this.lean = Math.max(-1, Math.min(1, (targetX - geom.mochiX) / (geom.w / 2)));
   }
 
   private drawThreats(ctx: CanvasRenderingContext2D, game: Game, now: number, geom: FieldGeom): void {
-    // Draw the most urgent last, so it is on top.
-    const list = [...game.threats].sort((a, b) => a.y - b.y);
+    const list = [...game.threats].sort((a, b) => a.y - b.y); // most urgent drawn on top
     for (const t of list) {
-      const p = toScreen(geom, t.x, t.y);
+      const p = this.threatPos(geom, t);
       const born = this.spawnTimes.get(t.id) ?? now - 1000;
-      const grow = Math.min(1, (now - born) / 250);
-      const bob = Math.sin(now / 320 + t.id) * 3;
+      const grow = Math.min(1, (now - born) / 280);
+      const hitAt = this.hitTimes.get(t.id);
+      const flash = hitAt !== undefined ? Math.max(0, 1 - (now - hitAt) / 220) : 0;
+      const scale = (t.boss ? bossScale(geom) : 1) * (0.4 + 0.6 * easeOutBack(grow)) * (1 + 0.12 * flash);
+      const bob = Math.sin(now / 320 + phase(t.id) * 6) * 3;
       ctx.save();
-      ctx.translate(p.x, p.y + bob);
-      ctx.scale(0.4 + 0.6 * easeOutBack(grow), 0.4 + 0.6 * easeOutBack(grow));
       ctx.globalAlpha = grow;
-      const f = threatBody(ctx, t.kind, 0, 0, now);
-      face(ctx, f.fx, f.fy);
-      bubble(ctx, t, 0, -14);
+      ctx.translate(p.x, p.y + bob);
+      ctx.save();
+      ctx.scale(scale, scale);
+      drawThreat(ctx, t.kind, now, t.id);
+      ctx.restore();
+      // The boss's long sequence must stay readable: its bubble rides above the shower arch
+      // but never higher than just under the score.
+      const by = t.boss ? Math.max(BOSS_BUBBLE_MIN_Y - (p.y + bob), -84 * scale - 44) : -64 * scale - 40;
+      bubble(ctx, t, 0, by, now, flash);
       ctx.restore();
     }
   }
 
   private drawGhosts(ctx: CanvasRenderingContext2D, now: number, geom: FieldGeom): void {
-    this.ghosts = this.ghosts.filter((g) => now - g.born < 320);
+    this.ghosts = this.ghosts.filter((g) => now - g.born < 340);
     for (const g of this.ghosts) {
-      const k = (now - g.born) / 320;
-      const p = toScreen(geom, g.threat.x, g.threat.y);
+      const k = (now - g.born) / 340;
+      const p = this.threatPos(geom, g.threat);
       ctx.save();
       ctx.globalAlpha = 1 - k;
-      ctx.translate(p.x, p.y);
-      ctx.scale(1 - 0.6 * k, 1 - 0.6 * k);
-      ctx.rotate(k * 0.6);
-      const f = threatBody(ctx, g.threat.kind, 0, 0, now);
-      face(ctx, f.fx, f.fy);
+      ctx.translate(p.x, p.y - 30 * k);
+      const s = (g.threat.boss ? bossScale(geom) : 1) * (1 - 0.7 * k);
+      ctx.scale(s, s);
+      ctx.rotate(k * 0.8);
+      drawThreat(ctx, g.threat.kind, now, g.threat.id);
       ctx.restore();
     }
-  }
-
-  private drawMochi(ctx: CanvasRenderingContext2D, now: number, geom: FieldGeom, gameOver: boolean): void {
-    const mood = this.mood;
-    let x = geom.mochiX;
-    let y = geom.mochiY;
-    let sx = 1;
-    let sy = 1;
-    if (mood === 'pounce') {
-      const k = 1 - Math.max(0, this.moodUntil - now) / 450; // 0 -> 1
-      const arc = Math.sin(k * Math.PI);
-      x += (Math.max(geom.left, Math.min(geom.right, this.pounceToX)) - x) * 0.18 * arc;
-      y -= 46 * arc;
-      sy = 1 + 0.12 * arc;
-      sx = 1 - 0.08 * arc;
-    } else if (mood === 'startled') {
-      const k = Math.max(0, this.moodUntil - now);
-      y -= gameOver ? 6 : Math.min(18, k / 30);
-      sx = 0.94;
-      sy = 1.08;
-    } else if (mood === 'happy') {
-      const k = Math.sin(((this.moodUntil - now) / 600) * Math.PI);
-      sx = 1 + 0.08 * k;
-      sy = 1 - 0.08 * k;
-    } else {
-      const breath = Math.sin(now / 700) * 0.03;
-      sx = 1 + breath;
-      sy = 1 - breath * 0.6;
-    }
-
-    ctx.save();
-    ctx.translate(x, y);
-    // tail
-    ctx.save();
-    ctx.rotate(Math.sin(now / 900) * 0.25);
-    ctx.beginPath();
-    ctx.moveTo(58, 8);
-    ctx.quadraticCurveTo(110, 0, 92, -40);
-    ctx.lineWidth = 16;
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = INK;
-    ctx.stroke();
-    ctx.lineWidth = 9;
-    ctx.strokeStyle = CREAM;
-    ctx.stroke();
-    ctx.restore();
-    ctx.scale(sx, sy);
-    // ears
-    const twitch = Math.sin(now / 160) > 0.97 ? 0.15 : 0;
-    for (const s of [-1, 1]) {
-      ctx.save();
-      ctx.translate(s * 34, -34);
-      ctx.rotate(s * (0.25 + (s > 0 ? twitch : 0)));
-      ctx.beginPath();
-      ctx.moveTo(-15, 8);
-      ctx.lineTo(0, -24);
-      ctx.lineTo(15, 8);
-      ctx.closePath();
-      outlined(ctx, CREAM, 5);
-      ctx.restore();
-    }
-    // body
-    ctx.beginPath();
-    ctx.ellipse(0, 0, 72, 46, 0, 0, Math.PI * 2);
-    outlined(ctx, CREAM, 5);
-    // cheeks
-    ctx.fillStyle = 'rgba(243, 155, 187, 0.55)';
-    for (const s of [-1, 1]) {
-      ctx.beginPath();
-      ctx.ellipse(s * 30, 8, 9, 6, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // eyes
-    ctx.strokeStyle = INK;
-    ctx.fillStyle = INK;
-    ctx.lineWidth = 4;
-    ctx.lineCap = 'round';
-    if (mood === 'startled') {
-      for (const s of [-1, 1]) {
-        circle(ctx, s * 18, -6, 8);
-        outlined(ctx, '#fff', 3);
-        circle(ctx, s * 18, -6, 3.5);
-        ctx.fill();
-      }
-    } else if (mood === 'happy' || mood === 'pounce') {
-      for (const s of [-1, 1]) {
-        ctx.beginPath();
-        ctx.moveTo(s * 18 - 8, -2);
-        ctx.lineTo(s * 18, -10);
-        ctx.lineTo(s * 18 + 8, -2);
-        ctx.stroke();
-      }
-    } else {
-      const blink = Math.sin(now / 2300) > 0.995;
-      for (const s of [-1, 1]) {
-        ctx.beginPath();
-        if (blink) {
-          ctx.moveTo(s * 18 - 8, -6);
-          ctx.lineTo(s * 18 + 8, -6);
-        } else {
-          ctx.arc(s * 18, -8, 8, 0.15 * Math.PI, 0.85 * Math.PI);
-        }
-        ctx.stroke();
-      }
-    }
-    // nose and mouth
-    ctx.beginPath();
-    ctx.moveTo(-4, 6);
-    ctx.lineTo(4, 6);
-    ctx.lineTo(0, 10);
-    ctx.closePath();
-    ctx.fillStyle = PINK_DARK;
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(0, 10);
-    ctx.quadraticCurveTo(-6, 17, -11, 13);
-    ctx.moveTo(0, 10);
-    ctx.quadraticCurveTo(6, 17, 11, 13);
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = INK;
-    ctx.stroke();
-    ctx.restore();
-
-    // zzz while napping, "!" when startled
-    ctx.save();
-    ctx.fillStyle = INK;
-    ctx.textAlign = 'center';
-    if (mood === 'sleep') {
-      for (let i = 0; i < 3; i++) {
-        const k = ((now / 1800 + i / 3) % 1 + 1) % 1;
-        ctx.globalAlpha = Math.sin(k * Math.PI) * 0.8;
-        ctx.font = `700 ${14 + i * 4}px ${FONT}`;
-        ctx.fillText('z', x + 58 + k * 30 + i * 8, y - 52 - k * 50);
-      }
-    } else if (mood === 'startled') {
-      ctx.font = `800 40px ${FONT}`;
-      ctx.fillStyle = '#c2455f';
-      ctx.fillText('!', x + 64, y - 58);
-    }
-    ctx.restore();
   }
 
   private drawHud(ctx: CanvasRenderingContext2D, game: Game, now: number, geom: FieldGeom): void {
     ctx.save();
-    // score + wave, top centre
     ctx.textAlign = 'center';
-    ctx.fillStyle = INK;
-    ctx.font = `800 40px ${FONT}`;
-    ctx.lineWidth = 8;
-    ctx.strokeStyle = 'rgba(255, 246, 238, 0.9)';
     ctx.lineJoin = 'round';
+    ctx.fillStyle = INK;
+    ctx.strokeStyle = 'rgba(255, 246, 238, 0.9)';
+    ctx.lineWidth = 8;
+    ctx.font = `800 40px ${FONT}`;
     const score = game.score.toLocaleString();
     ctx.strokeText(score, geom.w / 2, 52);
     ctx.fillText(score, geom.w / 2, 52);
     ctx.font = `700 16px ${FONT}`;
-    ctx.strokeText(`wave ${game.wave}`, geom.w / 2, 76);
-    ctx.fillText(`wave ${game.wave}`, geom.w / 2, 76);
+    const label = game.spec.boss ? `wave ${game.wave} · boss` : `wave ${game.wave}`;
+    ctx.strokeText(label, geom.w / 2, 76);
+    ctx.fillText(label, geom.w / 2, 76);
 
-    // nap hearts, top right
     const flash = now < this.heartFlashUntil && Math.floor(now / 120) % 2 === 0;
     for (let i = 0; i < RULES.hearts; i++) {
       const hx = geom.w - 40 - (RULES.hearts - 1 - i) * 40;
-      heart(ctx, hx, 38, 13);
       const full = i < game.hearts;
+      const beat = full ? 1 + Math.max(0, Math.sin(now / 260 + i)) * 0.04 : 1;
+      heartPath(ctx, hx, 38, 13 * beat);
       outlined(ctx, full ? (flash ? '#ff7f9f' : PINK) : 'rgba(255,255,255,0.6)', 4);
     }
 
-    // purr meter, bottom right
     const mult = game.multiplier;
-    const level = game.combo % RULES.comboPerLevel;
-    const fill = mult >= RULES.maxMultiplier ? 1 : level / RULES.comboPerLevel;
+    const fill = mult >= RULES.maxMultiplier ? 1 : (game.combo % RULES.comboPerLevel) / RULES.comboPerLevel;
     const bw = 150;
     const bx = geom.w - bw - 24;
     const by = geom.h - 44;
@@ -606,51 +363,40 @@ export class GameView {
   private drawBanner(ctx: CanvasRenderingContext2D, now: number, geom: FieldGeom): void {
     const b = this.banner;
     if (!b || now > b.until) return;
-    const k = 1 - (b.until - now) / RULES.introMs; // 0 -> 1
-    const alpha = Math.min(1, k * 6, (1 - k) * 4);
+    const k = 1 - (b.until - now) / RULES.introMs;
     const cx = geom.w / 2;
-    const cy = geom.h * 0.38;
+    const cy = geom.h * 0.36;
     ctx.save();
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha = Math.min(1, k * 6, (1 - k) * 4);
     ctx.textAlign = 'center';
-    ctx.font = `800 52px ${FONT}`;
-    ctx.lineWidth = 10;
     ctx.lineJoin = 'round';
+    const pulse = 1 + Math.sin(k * Math.PI) * 0.06;
+    ctx.translate(cx, cy);
+    ctx.scale(pulse, pulse);
+    ctx.font = `800 54px ${FONT}`;
+    ctx.lineWidth = 10;
     ctx.strokeStyle = CREAM;
-    ctx.strokeText(b.title, cx, cy);
-    ctx.fillStyle = INK;
-    ctx.fillText(b.title, cx, cy);
+    ctx.strokeText(b.title, 0, 0);
+    ctx.fillStyle = b.sub ? PINK_DARK : INK;
+    ctx.fillText(b.title, 0, 0);
+    if (b.sub) {
+      ctx.font = `700 20px ${FONT}`;
+      ctx.lineWidth = 6;
+      ctx.strokeText(b.sub, 0, 34);
+      ctx.fillStyle = INK;
+      ctx.fillText(b.sub, 0, 34);
+    }
     if (b.shapes.length) {
       const w = 150 + 60 * b.shapes.length;
-      roundRect(ctx, cx, cy + 56, w, 64, 32);
+      roundRect(ctx, 0, 56, w, 64, 32);
       outlined(ctx, '#fff');
       ctx.font = `700 20px ${FONT}`;
       ctx.textAlign = 'left';
       ctx.fillStyle = INK;
-      ctx.fillText('new shape', cx - w / 2 + 24, cy + 63);
-      b.shapes.forEach((id, i) => drawGlyph(ctx, id, cx - w / 2 + 160 + i * 60, cy + 56, 34, PINK_DARK, 5));
+      ctx.fillText('new shape', -w / 2 + 24, 63);
+      b.shapes.forEach((id, i) => drawGlyph(ctx, id, -w / 2 + 160 + i * 60, 56, 34, PINK_DARK, 5));
     }
     ctx.restore();
-  }
-
-  private drawBursts(ctx: CanvasRenderingContext2D, now: number): void {
-    this.bursts = this.bursts.filter((b) => now - b.born < 500);
-    for (const b of this.bursts) {
-      const k = (now - b.born) / 500;
-      ctx.save();
-      ctx.globalAlpha = 1 - k;
-      ctx.strokeStyle = PINK;
-      ctx.lineWidth = 6 * (1 - k) + 1;
-      circle(ctx, b.x, b.y, 20 + 60 * k);
-      ctx.stroke();
-      ctx.fillStyle = '#ffd65c';
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2;
-        circle(ctx, b.x + Math.cos(a) * (24 + 70 * k), b.y + Math.sin(a) * (24 + 70 * k), 5 * (1 - k) + 1);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
   }
 
   private drawPops(ctx: CanvasRenderingContext2D, now: number): void {
@@ -661,8 +407,9 @@ export class GameView {
     for (const p of this.pops) {
       const k = (now - p.born) / p.life;
       ctx.globalAlpha = 1 - k * k;
-      ctx.font = `800 ${p.size}px ${FONT}`;
-      const y = p.y - 36 * k;
+      const s = k < 0.12 ? 0.6 + (k / 0.12) * 0.4 : 1;
+      ctx.font = `800 ${Math.round(p.size * s)}px ${FONT}`;
+      const y = p.y - 38 * k;
       ctx.lineWidth = 6;
       ctx.strokeStyle = 'rgba(255, 246, 238, 0.95)';
       ctx.strokeText(p.text, p.x, y);
@@ -676,4 +423,9 @@ export class GameView {
 function easeOutBack(k: number): number {
   const c = 1.7;
   return 1 + (c + 1) * Math.pow(k - 1, 3) + c * Math.pow(k - 1, 2);
+}
+
+/** The boss shrinks a little in short windows so it doesn't swallow the playfield. */
+function bossScale(geom: FieldGeom): number {
+  return Math.max(1.3, Math.min(1.9, 1.3 + (geom.h - 520) / 300));
 }

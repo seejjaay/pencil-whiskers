@@ -316,11 +316,16 @@ export interface RecognizerParams {
   minScore: number;
   /** Score deducted per corner outside a shape's expected range. */
   cornerPenalty: number;
+  /**
+   * Personal (calibrated) templates must beat the threshold by this much. Measured on real
+   * strokes: without it, a junk stroke matched a personal V at 0.759 (standard: 0.663).
+   */
+  personalMargin: number;
 }
 
 // From a sweep over real camera strokes + the synthetic suite (2026-11-17): 0.74 / 0.20 kept
 // 93% of real shapes while rejecting >= 96% of every synthetic non-shape family.
-export const DEFAULT_RECOGNIZER: RecognizerParams = { minScore: 0.74, cornerPenalty: 0.2 };
+export const DEFAULT_RECOGNIZER: RecognizerParams = { minScore: 0.74, cornerPenalty: 0.2, personalMargin: 0.03 };
 
 export class Recognizer {
   private templates: Template[] = [];
@@ -394,6 +399,7 @@ export class Recognizer {
         const off = corners < t.corners[0] ? t.corners[0] - corners : corners > t.corners[1] ? corners - t.corners[1] : 0;
         score -= off * this.params.cornerPenalty;
       }
+      if (t.personal) score -= this.params.personalMargin;
       score = Math.max(0, score);
       const prev = bestById.get(t.id);
       if (!prev || score > prev.score) bestById.set(t.id, { id: t.id, label: t.label, score, personal: t.personal });

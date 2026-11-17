@@ -23,20 +23,22 @@ export interface Threat {
   cleared: number;
   /** Game time it appeared (ms). */
   readonly spawnedAt: number;
+  /** The boss of a boss wave: long sequence, costs more hearts, pays more. */
+  readonly boss: boolean;
 }
 
 /** A frozen copy of a threat at the moment of an event (it may be gone from the field after). */
 export type ThreatSnapshot = Readonly<Threat>;
 
 export type GameEvent =
-  | { type: 'waveStart'; wave: number; newShapes: readonly string[] }
+  | { type: 'waveStart'; wave: number; newShapes: readonly string[]; boss: boolean }
   | { type: 'spawn'; threat: ThreatSnapshot }
   | { type: 'hit'; threat: ThreatSnapshot; points: number }
   | { type: 'defeat'; threat: ThreatSnapshot; points: number }
   | { type: 'miss'; shape: string }
   | { type: 'combo'; combo: number; multiplier: number }
   | { type: 'escape'; threat: ThreatSnapshot }
-  | { type: 'heartLost'; hearts: number }
+  | { type: 'heartLost'; hearts: number; lost: number }
   | { type: 'waveClear'; wave: number; bonus: number }
   | { type: 'gameOver'; score: number; wave: number; bestCombo: number };
 
@@ -54,6 +56,11 @@ export const RULES = {
   maxMultiplier: 4,
   /** A partial hit on a sequence threat nudges it back up a little. */
   knockback: 0.05,
+  bossKnockback: 0.035,
+  /** Hearts lost when the boss reaches Mochi. */
+  bossHeartCost: 2,
+  /** Defeat bonus multiplier for the boss. */
+  bossBonusFactor: 2,
 } as const;
 
 export function multiplierFor(combo: number): number {
@@ -96,8 +103,8 @@ export class Game {
     return multiplierFor(this.combo);
   }
 
-  /** Starts (or restarts) a run. */
-  start(seed: number = this.seed): GameEvent[] {
+  /** Starts (or restarts) a run, optionally at a later wave (debug / practice). */
+  start(seed: number = this.seed, firstWave = 1): GameEvent[] {
     this.seed = seed;
     this.rng = createRng(seed);
     this.time = 0;
@@ -109,7 +116,7 @@ export class Game {
     this.stats = { defeated: 0, escaped: 0, correct: 0, wrong: 0 };
     this.nextId = 1;
     const events: GameEvent[] = [];
-    this.beginWave(1, events);
+    this.beginWave(Math.max(1, Math.floor(firstWave)), events);
     return events;
   }
 
@@ -152,13 +159,13 @@ export class Game {
     target.cleared++;
     let points = RULES.symbolPoints * mult;
     if (target.cleared >= target.symbols.length) {
-      points += RULES.defeatBonusPerSymbol * target.symbols.length * mult;
+      points += RULES.defeatBonusPerSymbol * target.symbols.length * mult * (target.boss ? RULES.bossBonusFactor : 1);
       const hit = target;
       this.threats = this.threats.filter((t) => t !== hit);
       this.stats.defeated++;
       events.push({ type: 'defeat', threat: snap(hit), points });
     } else {
-      target.y = Math.max(0, target.y - RULES.knockback);
+      target.y = Math.max(0, target.y - (target.boss ? RULES.bossKnockback : RULES.knockback));
       events.push({ type: 'hit', threat: snap(target), points });
     }
     this.score += points;
@@ -189,8 +196,9 @@ export class Game {
       this.threats = this.threats.filter((t) => t.y < 1);
       for (const t of escaped) {
         this.stats.escaped++;
-        this.hearts = Math.max(0, this.hearts - 1);
-        events.push({ type: 'escape', threat: snap(t) }, { type: 'heartLost', hearts: this.hearts });
+        const before = this.hearts;
+        this.hearts = Math.max(0, this.hearts - (t.boss ? RULES.bossHeartCost : 1));
+        events.push({ type: 'escape', threat: snap(t) }, { type: 'heartLost', hearts: this.hearts, lost: before - this.hearts });
         this.breakCombo(events);
         if (this.hearts === 0) {
           this.phase = 'gameover';
@@ -215,7 +223,7 @@ export class Game {
     this.spawned = 0;
     this.phase = 'intro';
     this.introEndsAt = this.time + RULES.introMs;
-    events.push({ type: 'waveStart', wave: n, newShapes: newShapesIn(n) });
+    events.push({ type: 'waveStart', wave: n, newShapes: newShapesIn(n), boss: this.spec.boss !== null });
   }
 
   private breakCombo(events: GameEvent[]): void {
@@ -226,6 +234,7 @@ export class Game {
 
   private spawn(): Threat {
     const spec = this.spec;
+    if (spec.boss && this.spawned === 0) return this.spawnBoss(spec.boss.symbols, spec.boss.speed);
     const length = this.rng.chance(spec.seqChance) ? this.rng.int(2, spec.seqMax) : 1;
     const wantedNow = new Set(this.threats.map((t) => t.symbols[t.cleared]));
     const symbols: string[] = [];
@@ -252,10 +261,25 @@ export class Game {
       symbols,
       cleared: 0,
       spawnedAt: this.time,
+      boss: false,
     };
     this.threats.push(threat);
     this.spawned++;
     return threat;
+  }
+
+  /** The "Bath Time" tub: centre stage, a long sequence of every unlocked shape, no repeats in a row. */
+  private spawnBoss(length: number, speed: number): Threat {
+    const symbols: string[] = [];
+    for (let i = 0; i < length; i++) {
+      let s = this.rng.pick(this.spec.shapes);
+      for (let tries = 0; tries < 6 && s === symbols[i - 1]; tries++) s = this.rng.pick(this.spec.shapes);
+      symbols.push(s);
+    }
+    const boss: Threat = { id: this.nextId++, kind: 'bathTime', x: 0.5, y: 0, speed, symbols, cleared: 0, spawnedAt: this.time, boss: true };
+    this.threats.push(boss);
+    this.spawned++;
+    return boss;
   }
 
   /** A spot away from threats near the top, so new bubbles don't overlap recent ones. */
