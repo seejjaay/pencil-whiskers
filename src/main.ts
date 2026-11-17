@@ -9,6 +9,9 @@ import { Recognizer, type Recognition } from './recognizer/recognizer';
 import { SHAPES } from './recognizer/shapes';
 import { loadTuning } from './settings';
 import { drawRecognitionLabel } from './view/labels';
+import { Game } from './game/game';
+import { GameView, fieldGeom } from './view/gameView';
+import { mountPanel } from './ui/panel';
 import type { Delegate } from './tracking/protocol';
 import { TrackerClient, emptyTrackerStats } from './tracking/trackerClient';
 import { makeCoverMap, type CoverMap } from './view/coverMap';
@@ -31,9 +34,11 @@ const statusBtn = statusEl.querySelector<HTMLButtonElement>('button')!;
 const modeBtn = document.querySelector<HTMLButtonElement>('#mode')!;
 const tuningEl = document.querySelector<HTMLDivElement>('#tuning')!;
 const toastEl = document.querySelector<HTMLDivElement>('#toast')!;
+const panelEl = document.querySelector<HTMLDivElement>('#panel')!;
 const ctx = canvas.getContext('2d', { alpha: true })!;
 
-hud.hidden = params.get('hud') === '0';
+// The debug HUD covers part of the playfield, so it starts hidden unless asked for (D toggles).
+hud.hidden = !(params.has('debug') || BENCH || params.get('hud') === '1');
 const tuning = loadTuning();
 const tuningPanel = mountTuningPanel(tuningEl, tuning);
 
@@ -73,7 +78,10 @@ function showStatus(title: string, body: string, isError = false): void {
   statusBtn.hidden = !isError;
 }
 const hideStatus = () => (statusEl.hidden = true);
-statusBtn.addEventListener('click', hideStatus);
+statusBtn.addEventListener('click', () => {
+  hideStatus();
+  if (game.phase === 'title') showTitle();
+});
 
 const MOUSE_NOTE = ' You can draw with the mouse meanwhile: hold the button and drag.';
 function cameraErrorText(err: CameraError): [string, string] {
@@ -145,8 +153,49 @@ interface Shown {
   at: number;
   /** null for discarded taps. */
   res: Recognition | null;
+  /** Drawn pink: recognised, and in play it actually hit a threat. Otherwise grey. */
+  good: boolean;
 }
 const shown: Shown[] = [];
+
+// ---- the game
+const FIXED_SEED = params.get('seed');
+const newSeed = (): number => (FIXED_SEED !== null ? Number(FIXED_SEED) >>> 0 : crypto.getRandomValues(new Uint32Array(1))[0]);
+const game = new Game(newSeed());
+const gameView = new GameView();
+let paused = false;
+let gameOverAt = 0;
+let panelShownAt = 0;
+const panel = mountPanel(panelEl, () => (paused ? setPaused(false) : startGame(performance.now())));
+
+function startGame(now: number): void {
+  paused = false;
+  shown.length = 0;
+  gameView.reset();
+  gameView.handle(game.start(newSeed()), now, fieldGeom(viewW, viewH));
+  panel.hide();
+}
+
+function showTitle(): void {
+  panel.showTitle();
+  panelShownAt = performance.now();
+}
+
+/** A circle drawn right as the card appears (e.g. the stroke that ended the game) shouldn't restart. */
+function canStartByDrawing(now: number): boolean {
+  return panel.visible && now - panelShownAt > 600;
+}
+
+function setPaused(p: boolean): void {
+  if (game.phase !== 'playing' && game.phase !== 'intro') return;
+  paused = p;
+  if (p) panel.showPaused();
+  else panel.hide();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) setPaused(true);
+});
 const KEEP_MS = 1100;
 const DUD_MS = 350;
 let strokesKept = 0;
@@ -190,7 +239,10 @@ function frame(now: number): void {
   const dt = lastFrame ? Math.min(100, now - lastFrame) : 16;
   lastFrame = now;
 
-  // 1. input
+  // 1. game time (never while paused or on the title / game-over screens)
+  const gameEvents = paused ? [] : game.step(dt);
+
+  // 2. input
   const inactive = active === mouse ? camera : mouse;
   inactive?.drain();
   for (const s of active.drain()) {
@@ -202,7 +254,20 @@ function frame(now: number): void {
     const res = read?.result ?? null;
     const stroke = read?.stroke ?? ev.stroke;
     strokeLog.commit(active.kind, ev.end, !kept, res);
-    shown.push({ stroke, kept, at: now, res });
+    let good = kept && !!res?.accepted;
+    if (res?.accepted && res.top) {
+      if ((game.phase === 'title' || game.phase === 'gameover') && res.top.id === 'circle' && canStartByDrawing(now)) {
+        startGame(now);
+      } else if (game.phase === 'playing' && !paused) {
+        const evs = game.submit(res.top.id);
+        good = evs.some((e) => e.type === 'hit' || e.type === 'defeat');
+        gameEvents.push(...evs);
+      }
+    } else if (kept && game.phase === 'playing' && !paused) {
+      const end = stroke.points[stroke.points.length - 1];
+      gameView.rejected(end.x, end.y, now);
+    }
+    shown.push({ stroke, kept, at: now, res, good });
     if (res) {
       lastRecognition = res;
       if (BENCH) console.log('[shape]', JSON.stringify({ mode: active.kind, end: ev.end, accepted: res.accepted, top: res.top, runnerUp: res.runnerUp, ms: res.ms, points: stroke.points.length }));
@@ -215,9 +280,18 @@ function frame(now: number): void {
     }
   }
   updateDisplayCursor(active.cursor(), dt);
+  const geom = fieldGeom(viewW, viewH);
+  gameView.handle(gameEvents, now, geom);
+  const over = gameEvents.find((e) => e.type === 'gameOver');
+  if (over) gameOverAt = now;
+  if (game.phase === 'gameover' && !panel.visible && now - gameOverAt > 1100) {
+    panel.showGameOver({ score: game.score, wave: game.wave, bestCombo: game.bestCombo });
+    panelShownAt = now;
+  }
 
-  // 2. draw
+  // 3. draw: game underneath, then strokes and the cursor on top
   ctx.clearRect(0, 0, viewW, viewH);
+  gameView.draw(ctx, game, now, geom);
   for (let i = shown.length - 1; i >= 0; i--) {
     const s = shown[i];
     const life = s.kept ? KEEP_MS : DUD_MS;
@@ -227,9 +301,9 @@ function frame(now: number): void {
       continue;
     }
     const f = age / life;
-    const good = s.kept && !!s.res?.accepted;
-    drawYarn(ctx, s.stroke.points, good ? YARN_PINK : YARN_DUD, { alpha: 1 - f * f, widthScale: 1 - 0.3 * f });
-    if (s.res) drawRecognitionLabel(ctx, s.stroke.points, s.res, 1 - f * f * f);
+    drawYarn(ctx, s.stroke.points, s.good ? YARN_PINK : YARN_DUD, { alpha: 1 - f * f, widthScale: 1 - 0.3 * f });
+    // Recognition labels are a debugging aid; in play the game's own reactions say what happened.
+    if (s.res && !hud.hidden) drawRecognitionLabel(ctx, s.stroke.points, s.res, 1 - f * f * f);
   }
   const cur = recorder.current;
   if (cur) drawYarn(ctx, smoothStroke(cur.points, tuning.recorder.smoothPasses), YARN_PINK, { head: displayCursor?.down ? displayCursor : null });
@@ -292,7 +366,10 @@ function hudLines(): string[] {
     .map((s) => `${intentLabel(s.intent)} ${s.ok}/${s.n}${s.taps ? ` (+${s.taps} taps)` : ''}`)
     .join('   ');
   lines.push(`tagging  ${strokeLog.intent ? intentLabel(strokeLog.intent) : 'off'}   ${stats}`);
-  lines.push(`[D] hud  [M] camera/mouse  [T] tuning  [1-${INTENT_KEYS.length}] tag  [0] untag  [L] save log`);
+  lines.push(
+    `game     ${game.phase} wave ${game.wave}  spawned ${game.spawned}/${game.spec.threatCount}  on screen ${game.threats.length}  hearts ${game.hearts}  combo ${game.combo} x${game.multiplier}  seed ${game.seed}`,
+  );
+  lines.push(`[D] hud  [M] camera/mouse  [T] tuning  [P] pause  [1-${INTENT_KEYS.length}] tag  [0] untag  [L] save log`);
   return lines;
 }
 
@@ -311,6 +388,8 @@ if (BENCH) {
       tracker?.sampleRates(now);
       return currentSnapshot(now);
     },
+    /** Read-only peek at the game for automated checks. */
+    game: () => ({ phase: game.phase, wave: game.wave, hearts: game.hearts, score: game.score, combo: game.combo, threats: game.threats.map((t) => ({ ...t })) }),
   };
 }
 
@@ -321,6 +400,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'm') setMode(active.kind === 'camera' ? 'mouse' : 'camera');
   else if (k === 't') tuningPanel.toggle();
   else if (k === 'l') saveStrokeLog();
+  else if (k === 'p' || k === 'escape') setPaused(!paused);
   else if (/^[0-9]$/.test(k)) {
     const n = Number(k);
     if (n === 0) {
@@ -336,7 +416,8 @@ window.addEventListener('keydown', (e) => {
 // ---- boot
 async function boot(): Promise<void> {
   if (MOUSE_ONLY) {
-    showStatus('Mouse mode', 'Hold the mouse button and drag to draw.', true);
+    hideStatus();
+    showTitle();
     return;
   }
   showStatus('Pencil Whiskers', 'Asking for the camera… Your video stays on this computer.');
@@ -375,6 +456,7 @@ async function boot(): Promise<void> {
   );
   setMode('camera');
   hideStatus();
+  showTitle();
   if (BENCH) console.log('[bench] tracker ready', JSON.stringify({ delegate: tracker.stats.delegate, loadMs: Math.round(tracker.stats.loadMs) }));
 }
 
