@@ -223,6 +223,19 @@ describe('game flow', () => {
     expect(g).toMatchObject({ phase: 'intro', wave: 1, hearts: RULES.hearts, score: 0, combo: 0, seed: 77 });
     expect(g.threats).toHaveLength(0);
   });
+
+  it('starts with the configured number of lives and ends the run when they are gone', () => {
+    const g = new Game(1);
+    g.maxHearts = 3;
+    g.start(1);
+    expect(g.hearts).toBe(3);
+    g.hearts = 1;
+    g.phase = 'playing';
+    g.threats = [threat({ symbols: ['hline'], y: 0.99 })];
+    g.step(500);
+    expect(g.hearts).toBe(0);
+    expect(g.phase).toBe('over');
+  });
 });
 
 describe('boss waves ("Bath Time")', () => {

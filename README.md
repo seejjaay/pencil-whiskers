@@ -25,7 +25,7 @@ Open http://localhost:5173 and allow the camera. No camera? It falls back to the
 | Draw | Pinch thumb + index finger and move (or hold the left mouse button) |
 | Start / play again | Draw a circle, or press Start |
 | Pause | P or Esc (switching tabs pauses too) |
-| Settings | Sound, screen shake, camera tint, and "Teach Thomas my shapes" calibration |
+| Settings | Sound, screen shake, camera tint, lives (1–5), and "Teach Thomas my shapes" calibration |
 | Camera / mouse | M |
 | Debug | D: performance HUD · T: input tuning · [ and ] then L: tag and save strokes |
 | Power-ups | Draw a falling gift's shape to save it; draw spiral (slow time), ∞ (erase all) or ∩ (barrier) to use it |

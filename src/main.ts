@@ -237,6 +237,7 @@ function startGame(now: number): void {
   paused = false;
   shown.length = 0;
   gameView.reset();
+  game.maxHearts = prefs.hearts;
   gameView.handle(game.start(newSeed(), FIRST_WAVE), now, fieldGeom(viewW, viewH));
   panel.hide();
 }

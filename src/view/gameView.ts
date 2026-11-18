@@ -474,8 +474,8 @@ export class GameView {
     ctx.fillText(label, geom.w / 2, 76);
 
     const flash = now < this.heartFlashUntil && Math.floor(now / 120) % 2 === 0;
-    for (let i = 0; i < RULES.hearts; i++) {
-      const hx = geom.w - 40 - (RULES.hearts - 1 - i) * 40;
+    for (let i = 0; i < game.maxHearts; i++) {
+      const hx = geom.w - 40 - (game.maxHearts - 1 - i) * 40;
       const full = i < game.hearts;
       const beat = full ? 1 + Math.max(0, Math.sin(now / 260 + i)) * 0.04 : 1;
       heartPath(ctx, hx, 38, 13 * beat);

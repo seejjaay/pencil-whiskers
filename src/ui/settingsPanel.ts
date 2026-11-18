@@ -1,5 +1,5 @@
 import { CAT_NAME } from '../cat';
-import { savePrefs, type Prefs } from '../prefs';
+import { MAX_HEARTS, MIN_HEARTS, savePrefs, type Prefs } from '../prefs';
 
 export interface SettingsApi {
   open(): void;
@@ -59,6 +59,25 @@ export function mountSettings(
   });
   tintLabel.append(tintText, tint);
 
+  const livesLabel = document.createElement('label');
+  livesLabel.className = 'tint';
+  const livesText = document.createElement('span');
+  const renderLives = () => (livesText.textContent = `Lives: ${prefs.hearts} (next game)`);
+  const lives = document.createElement('input');
+  lives.type = 'range';
+  lives.min = String(MIN_HEARTS);
+  lives.max = String(MAX_HEARTS);
+  lives.step = '1';
+  lives.value = String(prefs.hearts);
+  lives.addEventListener('input', () => {
+    prefs.hearts = Number(lives.value);
+    renderLives();
+    savePrefs(prefs);
+    hooks.onChange();
+  });
+  renderLives();
+  livesLabel.append(livesText, lives);
+
   const calibrate = document.createElement('button');
   calibrate.type = 'button';
   calibrate.textContent = `Teach ${CAT_NAME} my shapes`;
@@ -70,7 +89,7 @@ export function mountSettings(
   close.textContent = 'Done';
   close.addEventListener('click', () => api.close());
 
-  root.append(title, sound, shake, tintLabel, calibrate, close);
+  root.append(title, sound, shake, tintLabel, livesLabel, calibrate, close);
   root.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       e.stopPropagation();
@@ -83,6 +102,8 @@ export function mountSettings(
     open() {
       returnFocus = document.activeElement;
       tint.value = String(prefs.tint);
+      lives.value = String(prefs.hearts);
+      renderLives();
       root.hidden = false;
       sound.focus({ preventScroll: true });
     },

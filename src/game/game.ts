@@ -113,6 +113,8 @@ export class Game {
   /** Game time slow-time / the barrier run until (0 = off). */
   slowUntil = 0;
   barrierUntil = 0;
+  /** Lives per run; set from player prefs before start(). */
+  maxHearts: number = RULES.hearts;
   hearts: number = RULES.hearts;
   score = 0;
   combo = 0;
@@ -158,7 +160,7 @@ export class Game {
     this.barrierUntil = 0;
     this.nextDropAt = Infinity;
     this.seenKinds = new Set();
-    this.hearts = RULES.hearts;
+    this.hearts = this.maxHearts;
     this.score = 0;
     this.combo = 0;
     this.bestCombo = 0;
