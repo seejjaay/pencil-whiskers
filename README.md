@@ -42,6 +42,7 @@ npm run preview     # serve dist/ at http://localhost:4173
 ```
 
 The build uses a relative base (`base: './'`), so `dist/` works from any sub-path.
+Run `npm test` before pushing so a broken change never reaches the Pages deploy.
 
 ## Deploy to GitHub Pages
 
